@@ -139,9 +139,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vexotun.app.model.LinkExporter
-import com.vexotun.app.model.SlowDnsMode
 import com.vexotun.app.model.SlowDnsRecordType
-import com.vexotun.app.model.SlowDnsTransport
 import com.vexotun.app.model.SplitTunnelMode
 import com.vexotun.app.model.SshProfile
 import com.vexotun.app.model.SshTransport
@@ -2197,75 +2195,13 @@ private fun SshProfileEditor(
             )
         }
     } else {
-        Text(
-            "Mode SlowDNS",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+        CompactDropdown(
+            label = "Tipe DNS",
+            selectedLabel = s.dnsType.label,
+            options = SlowDnsRecordType.entries,
+            optionLabel = { it.label },
+            onSelect = { dt -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsType = dt)) } }
         )
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            SlowDnsMode.entries.forEachIndexed { index, mode ->
-                SegmentedButton(
-                    selected = s.dnsMode == mode,
-                    onClick = { onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsMode = mode)) } },
-                    shape = SegmentedButtonDefaults.itemShape(index, SlowDnsMode.entries.size)
-                ) {
-                    Text(mode.label, maxLines = 1)
-                }
-            }
-        }
-
-        Text(
-            "Transport DNS",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            SlowDnsTransport.entries.forEachIndexed { index, tr ->
-                SegmentedButton(
-                    selected = s.dnsTransport == tr,
-                    onClick = {
-                        val defaultResolver = when (tr) {
-                            SlowDnsTransport.UDP -> "8.8.8.8"
-                            SlowDnsTransport.DOH -> "https://dns.google/dns-query"
-                            SlowDnsTransport.DOT -> "dns.google:853"
-                        }
-                        onUpdateProfile {
-                            val current = it.ssh.dnsServer.trim()
-                            val shouldReplace = current.isBlank() ||
-                                current == "8.8.8.8" ||
-                                current.startsWith("https://") ||
-                                current.endsWith(":853")
-                            it.copy(
-                                ssh = it.ssh.copy(
-                                    dnsTransport = tr,
-                                    dnsServer = if (shouldReplace) defaultResolver else current
-                                )
-                            )
-                        }
-                    },
-                    shape = SegmentedButtonDefaults.itemShape(index, SlowDnsTransport.entries.size)
-                ) {
-                    Text(tr.label, maxLines = 1)
-                }
-            }
-        }
-
-        if (s.dnsMode == SlowDnsMode.VAYDNS) {
-            CompactDropdown(
-                label = "Tipe Record",
-                selectedLabel = s.dnsType.label,
-                options = SlowDnsRecordType.entries,
-                optionLabel = { it.label },
-                onSelect = { dt -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsType = dt)) } }
-            )
-        } else {
-            Text(
-                "Mode dnstt: otomatis TXT (idle-timeout 2m, keepalive 10s)",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
         OutlinedTextField(
             value = s.nameserver,
             onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(nameserver = v.replace("\n", ""))) } },
@@ -2285,15 +2221,7 @@ private fun SshProfileEditor(
         OutlinedTextField(
             value = s.dnsServer,
             onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsServer = v.replace("\n", ""))) } },
-            label = {
-                Text(
-                    when (s.dnsTransport) {
-                        SlowDnsTransport.UDP -> "DNS Resolver (mis. 8.8.8.8)"
-                        SlowDnsTransport.DOH -> "URL DoH (mis. https://dns.google/dns-query)"
-                        SlowDnsTransport.DOT -> "Host DoT (mis. dns.google:853)"
-                    }
-                )
-            },
+            label = { Text("DNS Resolver (mis. 8.8.8.8)") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )

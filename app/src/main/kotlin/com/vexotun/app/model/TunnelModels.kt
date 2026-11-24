@@ -20,29 +20,13 @@ enum class SshTransport(val wireValue: String, val label: String) {
 }
 
 @Serializable
-enum class SlowDnsMode(val wireValue: String, val label: String) {
-    DNSTT("dnstt", "dnstt"),
-    VAYDNS("vaydns", "VayDNS")
-}
-
-@Serializable
-enum class SlowDnsTransport(val wireValue: String, val label: String) {
-    UDP("udp", "UDP"),
-    DOH("doh", "DoH"),
-    DOT("dot", "DoT")
-}
-
-@Serializable
 enum class SlowDnsRecordType(val wireValue: String, val label: String) {
-    TXT("txt", "TXT"),
-    NULL("null", "NULL"),
-    NS("ns", "NS"),
-    CNAME("cname", "CNAME"),
-    MX("mx", "MX"),
-    SRV("srv", "SRV"),
-    A("a", "A"),
-    AAAA("aaaa", "AAAA"),
-    CAA("caa", "CAA")
+    TXT("TXT", "TXT"),
+    NULL("NULL", "NULL"),
+    CNAME("CNAME", "CNAME"),
+    NS("NS", "NS"),
+    A("A", "A"),
+    MX("MX", "MX")
 }
 
 @Serializable
@@ -83,8 +67,6 @@ data class SshProfile(
     val wsPath: String = "/",
     val wsHost: String = "",
     val dnsServer: String = "8.8.8.8",
-    val dnsMode: SlowDnsMode = SlowDnsMode.DNSTT,
-    val dnsTransport: SlowDnsTransport = SlowDnsTransport.UDP,
     val dnsType: SlowDnsRecordType = SlowDnsRecordType.TXT,
     val nameserver: String = "",
     val publicKey: String = ""
@@ -195,9 +177,7 @@ data class CoreSshPayload(
     val wsPath: String,
     val wsHost: String,
     val dnsServer: String = "8.8.8.8",
-    val dnsMode: String = "dnstt",
-    val dnsTransport: String = "udp",
-    val dnsType: String = "txt",
+    val dnsType: String = "TXT",
     val nameserver: String = "",
     val publicKey: String = ""
 )
