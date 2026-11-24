@@ -1851,6 +1851,36 @@ private fun ConfigEditorPage(
     }
 }
 
+@Composable
+private fun NumericTextField(
+    value: Int,
+    defaultValue: Int,
+    onValueChange: (Int) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    var text by remember { mutableStateOf(if (value > 0) value.toString() else "") }
+    LaunchedEffect(value) {
+        val currentParsed = text.toIntOrNull() ?: 0
+        if (value > 0 && value != currentParsed) {
+            text = value.toString()
+        }
+    }
+    OutlinedTextField(
+        value = text,
+        onValueChange = { raw ->
+            val digits = raw.filter(Char::isDigit).take(5)
+            text = digits
+            onValueChange(digits.toIntOrNull() ?: 0)
+        },
+        placeholder = { Text(defaultValue.toString()) },
+        label = { Text(label) },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        singleLine = true,
+        modifier = modifier
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun <T> CompactDropdown(
@@ -1919,15 +1949,11 @@ private fun XrayProfileEditor(
             singleLine = true,
             modifier = Modifier.weight(2f)
         )
-        OutlinedTextField(
-            value = x.port.toString(),
-            onValueChange = { v ->
-                val p = v.filter(Char::isDigit).toIntOrNull() ?: 443
-                onUpdateProfile { it.copy(xray = it.xray.copy(port = p)) }
-            },
-            label = { Text("Port") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            singleLine = true,
+        NumericTextField(
+            value = x.port,
+            defaultValue = 443,
+            onValueChange = { p -> onUpdateProfile { it.copy(xray = it.xray.copy(port = p)) } },
+            label = "Port",
             modifier = Modifier.weight(1f)
         )
     }
@@ -2086,15 +2112,11 @@ private fun XrayProfileEditor(
                 singleLine = true,
                 modifier = Modifier.weight(2f)
             )
-            OutlinedTextField(
-                value = x.proxyPort.toString(),
-                onValueChange = { v ->
-                    val p = v.filter(Char::isDigit).toIntOrNull() ?: 8080
-                    onUpdateProfile { it.copy(xray = it.xray.copy(proxyPort = p)) }
-                },
-                label = { Text("Port") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true,
+            NumericTextField(
+                value = x.proxyPort,
+                defaultValue = 8080,
+                onValueChange = { p -> onUpdateProfile { it.copy(xray = it.xray.copy(proxyPort = p)) } },
+                label = "Port",
                 modifier = Modifier.weight(1f)
             )
         }
@@ -2181,15 +2203,11 @@ private fun SshProfileEditor(
             singleLine = true,
             modifier = Modifier.weight(2f)
         )
-        OutlinedTextField(
-            value = s.port.toString(),
-            onValueChange = { v ->
-                val p = v.filter(Char::isDigit).toIntOrNull() ?: 22
-                onUpdateProfile { it.copy(ssh = it.ssh.copy(port = p)) }
-            },
-            label = { Text("Port") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            singleLine = true,
+        NumericTextField(
+            value = s.port,
+            defaultValue = 22,
+            onValueChange = { p -> onUpdateProfile { it.copy(ssh = it.ssh.copy(port = p)) } },
+            label = "Port",
             modifier = Modifier.weight(1f)
         )
     }
@@ -2306,15 +2324,11 @@ private fun SshProfileEditor(
                         singleLine = true,
                         modifier = Modifier.weight(2f)
                     )
-                    OutlinedTextField(
-                        value = s.proxyPort.toString(),
-                        onValueChange = { v ->
-                            val p = v.filter(Char::isDigit).toIntOrNull() ?: 8080
-                            onUpdateProfile { it.copy(ssh = it.ssh.copy(proxyPort = p)) }
-                        },
-                        label = { Text("Port") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
+                    NumericTextField(
+                        value = s.proxyPort,
+                        defaultValue = 8080,
+                        onValueChange = { p -> onUpdateProfile { it.copy(ssh = it.ssh.copy(proxyPort = p)) } },
+                        label = "Port",
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -2698,15 +2712,11 @@ private fun SettingsPage(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-                OutlinedTextField(
-                    value = config.mtu.toString(),
-                    onValueChange = { v ->
-                        val m = v.filter(Char::isDigit).toIntOrNull() ?: 1420
-                        onUpdateConfig { it.copy(mtu = m) }
-                    },
-                    label = { Text("MTU") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
+                NumericTextField(
+                    value = config.mtu,
+                    defaultValue = 1420,
+                    onValueChange = { m -> onUpdateConfig { it.copy(mtu = m) } },
+                    label = "MTU",
                     modifier = Modifier.fillMaxWidth()
                 )
             }
