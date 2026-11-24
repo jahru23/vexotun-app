@@ -97,19 +97,17 @@ data class TunnelProfile(
 
 @Serializable
 data class VexotunConfig(
-    val profiles: List<TunnelProfile> = listOf(
-        TunnelProfile(id = "default-xray", name = "Xray Default", mode = TunnelMode.XRAY),
-        TunnelProfile(id = "default-ssh", name = "SSH Default", mode = TunnelMode.SSH)
-    ),
-    val activeProfileId: String = "default-xray",
+    val profiles: List<TunnelProfile> = emptyList(),
+    val activeProfileId: String = "",
     val mtu: Int = 1500,
     val socksPort: Int = 10808,
     val dnsServer: String = "8.8.8.8",
     val splitMode: SplitTunnelMode = SplitTunnelMode.ALL_APPS,
-    val splitPackages: List<String> = emptyList()
+    val splitPackages: List<String> = emptyList(),
+    val darkTheme: Boolean = true
 ) {
-    fun activeProfile(): TunnelProfile =
-        profiles.firstOrNull { it.id == activeProfileId } ?: profiles.first()
+    fun activeProfile(): TunnelProfile? =
+        profiles.firstOrNull { it.id == activeProfileId } ?: profiles.firstOrNull()
 }
 
 @Serializable

@@ -11,6 +11,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,37 +24,51 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.NetworkPing
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -65,24 +80,28 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -96,7 +115,16 @@ import com.vexotun.app.model.XrayProtocol
 import com.vexotun.app.model.XrayTransport
 import com.vexotun.app.vpn.ConnectionStatus
 import com.vexotun.app.vpn.VpnRuntimeState
+import kotlinx.coroutines.launch
 import java.util.Locale
+
+private enum class AppPage(val title: String, val icon: ImageVector) {
+    TUNNEL("Tunnel", Icons.Default.PowerSettingsNew),
+    CONFIG("Config", Icons.Default.Key),
+    LOGS("Log Koneksi", Icons.Default.Terminal),
+    APPS("Filter Aplikasi", Icons.Default.Apps),
+    SETTINGS("Pengaturan", Icons.Default.Tune)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -109,8 +137,13 @@ fun MainScreen(
     val apps by viewModel.apps.collectAsState()
     val isPinging by viewModel.isPinging.collectAsState()
 
-    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var currentPage by rememberSaveable { mutableStateOf(AppPage.TUNNEL) }
+    var editingProfileId by rememberSaveable { mutableStateOf<String?>(null) }
     var showImportDialog by remember { mutableStateOf(false) }
+    var showCreateTypeDialog by remember { mutableStateOf(false) }
+
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
 
     if (showImportDialog) {
         ImportLinkDialog(
@@ -125,90 +158,309 @@ fun MainScreen(
         )
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Vexotun", fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.width(10.dp))
-                        StatusBadge(runtime.status)
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { showImportDialog = true }) {
-                        Icon(Icons.Default.Link, contentDescription = "Import Link")
-                    }
+    if (showCreateTypeDialog) {
+        CreateConfigTypeDialog(
+            onDismiss = { showCreateTypeDialog = false },
+            onSelectMode = { mode ->
+                showCreateTypeDialog = false
+                val newId = viewModel.createProfile(mode)
+                editingProfileId = newId
+                currentPage = AppPage.CONFIG
+            }
+        )
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet(
+                modifier = Modifier.width(280.dp),
+                drawerContainerColor = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 24.dp)
+                ) {
+                    Text(
+                        "Vexotun",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "Xray & SSH Tunnel",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-            )
-        },
-        bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Default.Home, contentDescription = "Tunnel") },
-                    label = { Text("Tunnel") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Default.Settings, contentDescription = "Config") },
-                    label = { Text("Config") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 2,
-                    onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Default.Terminal, contentDescription = "Log") },
-                    label = { Text("Log") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 3,
-                    onClick = { selectedTab = 3 },
-                    icon = { Icon(Icons.Default.Apps, contentDescription = "Aplikasi") },
-                    label = { Text("Aplikasi") }
-                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Spacer(Modifier.height(8.dp))
+
+                AppPage.entries.forEach { page ->
+                    NavigationDrawerItem(
+                        icon = { Icon(page.icon, contentDescription = null) },
+                        label = { Text(page.title) },
+                        selected = currentPage == page,
+                        onClick = {
+                            if (page != AppPage.CONFIG) {
+                                editingProfileId = null
+                            }
+                            currentPage = page
+                            scope.launch { drawerState.close() }
+                        },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                    )
+                }
             }
         }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            when (selectedTab) {
-                0 -> HomeTab(
-                    config = config,
-                    runtime = runtime,
-                    isPinging = isPinging,
-                    onSelectProfile = viewModel::selectProfile,
-                    onOpenImport = { showImportDialog = true },
-                    onStartClick = onRequestVpnStart,
-                    onStopClick = viewModel::stopVpn,
-                    onPingClick = viewModel::runPingCheck
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background
+                    ),
+                    navigationIcon = {
+                        if (currentPage == AppPage.CONFIG && editingProfileId != null) {
+                            IconButton(onClick = { editingProfileId = null }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Kembali")
+                            }
+                        } else {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                Icon(Icons.Default.Menu, contentDescription = "Menu")
+                            }
+                        }
+                    },
+                    title = {
+                        val titleText = when {
+                            currentPage == AppPage.TUNNEL -> "Vexotun"
+                            currentPage == AppPage.CONFIG && editingProfileId != null -> "Edit Config"
+                            else -> currentPage.title
+                        }
+                        Text(
+                            titleText,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    actions = {
+                        StatusBadge(
+                            status = runtime.status,
+                            modifier = Modifier.padding(end = 12.dp)
+                        )
+                    }
                 )
-                1 -> ConfigTab(
-                    config = config,
-                    onSelectProfile = viewModel::selectProfile,
-                    onAddProfile = viewModel::addBlankProfile,
-                    onDeleteProfile = viewModel::deleteProfile,
-                    onOpenImport = { showImportDialog = true },
-                    onUpdateProfile = viewModel::updateActiveProfile,
-                    onUpdateConfig = viewModel::updateConfig
-                )
-                2 -> LogsTab(
-                    runtime = runtime,
-                    onClear = viewModel::clearLogs
-                )
-                3 -> SplitTunnelTab(
-                    config = config,
-                    apps = apps,
-                    onSplitModeChange = viewModel::setSplitMode,
-                    onTogglePackage = viewModel::toggleSplitPackage
-                )
+            },
+            bottomBar = {
+                if (currentPage == AppPage.TUNNEL || (currentPage == AppPage.CONFIG && editingProfileId == null)) {
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        tonalElevation = 0.dp
+                    ) {
+                        NavigationBarItem(
+                            selected = currentPage == AppPage.TUNNEL,
+                            onClick = { currentPage = AppPage.TUNNEL },
+                            icon = { Icon(Icons.Default.PowerSettingsNew, contentDescription = "Tunnel") },
+                            label = { Text("Tunnel") }
+                        )
+                        NavigationBarItem(
+                            selected = currentPage == AppPage.CONFIG,
+                            onClick = { currentPage = AppPage.CONFIG },
+                            icon = { Icon(Icons.Default.Key, contentDescription = "Config") },
+                            label = { Text("Config") }
+                        )
+                    }
+                }
+            }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                when (currentPage) {
+                    AppPage.TUNNEL -> TunnelPage(
+                        config = config,
+                        runtime = runtime,
+                        isPinging = isPinging,
+                        onSelectProfile = viewModel::selectProfile,
+                        onGoToConfig = {
+                            editingProfileId = null
+                            currentPage = AppPage.CONFIG
+                        },
+                        onOpenImport = { showImportDialog = true },
+                        onStartClick = onRequestVpnStart,
+                        onStopClick = viewModel::stopVpn,
+                        onPingClick = viewModel::runPingCheck
+                    )
+                    AppPage.CONFIG -> {
+                        val editTarget = editingProfileId?.let { id ->
+                            config.profiles.firstOrNull { it.id == id }
+                        }
+                        if (editTarget != null) {
+                            ConfigEditorPage(
+                                profile = editTarget,
+                                onUpdateProfile = { transform ->
+                                    viewModel.updateProfile(editTarget.id, transform)
+                                },
+                                onDone = { editingProfileId = null }
+                            )
+                        } else {
+                            ConfigListPage(
+                                config = config,
+                                onSelectProfile = viewModel::selectProfile,
+                                onEditProfile = { id -> editingProfileId = id },
+                                onDeleteProfile = { id ->
+                                    if (editingProfileId == id) editingProfileId = null
+                                    viewModel.deleteProfile(id)
+                                },
+                                onCreateClick = { showCreateTypeDialog = true },
+                                onOpenImport = { showImportDialog = true }
+                            )
+                        }
+                    }
+                    AppPage.LOGS -> LogsPage(
+                        runtime = runtime,
+                        onClear = viewModel::clearLogs
+                    )
+                    AppPage.APPS -> SplitTunnelPage(
+                        config = config,
+                        apps = apps,
+                        onSplitModeChange = viewModel::setSplitMode,
+                        onTogglePackage = viewModel::toggleSplitPackage
+                    )
+                    AppPage.SETTINGS -> SettingsPage(
+                        config = config,
+                        onUpdateConfig = viewModel::updateConfig
+                    )
+                }
             }
         }
     }
+}
+
+@Composable
+private fun StatusBadge(status: ConnectionStatus, modifier: Modifier = Modifier) {
+    val (bg, fg, label) = when (status) {
+        ConnectionStatus.CONNECTED -> Triple(Color(0xFF064E3B), Color(0xFF34D399), "Terhubung")
+        ConnectionStatus.CONNECTING -> Triple(Color(0xFF78350F), Color(0xFFFBBF24), "Menghubungkan")
+        ConnectionStatus.ERROR -> Triple(Color(0xFF7F1D1D), Color(0xFFF87171), "Gagal")
+        ConnectionStatus.DISCONNECTED -> Triple(
+            MaterialTheme.colorScheme.surfaceVariant,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+            "Siap"
+        )
+    }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(bg)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    ) {
+        Text(
+            label,
+            color = fg,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun ModeBadge(mode: TunnelMode, modifier: Modifier = Modifier) {
+    val (bg, fg) = if (mode == TunnelMode.XRAY) {
+        MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        Color(0xFF3B2F0B) to Color(0xFFFBBF24)
+    }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(bg)
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+    ) {
+        Text(
+            mode.label,
+            color = fg,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun CreateConfigTypeDialog(
+    onDismiss: () -> Unit,
+    onSelectMode: (TunnelMode) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Pilih Tipe Config") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Pilih jenis engine yang ingin dibuat. Halaman Tunnel akan mendeteksi tipe config secara otomatis.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Card(
+                    onClick = { onSelectMode(TunnelMode.XRAY) },
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Xray", fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(8.dp))
+                            ModeBadge(TunnelMode.XRAY)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "VMess, VLESS, Trojan, Shadowsocks",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Card(
+                    onClick = { onSelectMode(TunnelMode.SSH) },
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("SSH", fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(8.dp))
+                            ModeBadge(TunnelMode.SSH)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Direct, HTTP Proxy, SSL/TLS, WebSocket",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Batal")
+            }
+        }
+    )
 }
 
 @Composable
@@ -222,7 +474,7 @@ private fun ImportLinkDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Import Link Konfigurasi") },
+        title = { Text("Import Link Config") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
@@ -257,7 +509,8 @@ private fun ImportLinkDialog(
                             input = clip
                             errorMsg = null
                         }
-                    }
+                    },
+                    contentPadding = PaddingValues(horizontal = 4.dp)
                 ) {
                     Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
@@ -281,30 +534,14 @@ private fun ImportLinkDialog(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun StatusBadge(status: ConnectionStatus) {
-    val (bg, label) = when (status) {
-        ConnectionStatus.CONNECTED -> Color(0xFF1B5E20) to "TERHUBUNG"
-        ConnectionStatus.CONNECTING -> Color(0xFFE65100) to "MENGHUBUNGKAN"
-        ConnectionStatus.ERROR -> Color(0xFFB71C1C) to "GAGAL"
-        ConnectionStatus.DISCONNECTED -> Color(0xFF455A64) to "SIAP"
-    }
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(bg)
-            .padding(horizontal = 8.dp, vertical = 2.dp)
-    ) {
-        Text(label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-@Composable
-private fun HomeTab(
+private fun TunnelPage(
     config: VexotunConfig,
     runtime: VpnRuntimeState,
     isPinging: Boolean,
     onSelectProfile: (String) -> Unit,
+    onGoToConfig: () -> Unit,
     onOpenImport: () -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
@@ -318,78 +555,241 @@ private fun HomeTab(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Profile quick selector
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            config.profiles.forEach { profile ->
-                val selected = profile.id == active.id
-                FilterChip(
-                    selected = selected,
-                    onClick = { if (!isActive) onSelectProfile(profile.id) },
-                    label = { Text("${profile.name} (${profile.mode.label})") }
-                )
-            }
-            OutlinedButton(
-                onClick = onOpenImport,
-                enabled = !isActive
+        if (active == null) {
+            // Empty state: user must create or import config first
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
-                Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Import")
-            }
-        }
-
-        // Main Connect Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = { if (isActive) onStopClick() else onStartClick() },
-                    modifier = Modifier.size(124.dp),
-                    shape = CircleShape,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isActive) Color(0xFFC62828) else MaterialTheme.colorScheme.primary
-                    )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(36.dp))
-                        Spacer(Modifier.height(4.dp))
-                        Text(if (isActive) "PUTUSKAN" else "HUBUNGKAN", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Icon(
+                        Icons.Default.VpnKey,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Text(
+                        "Belum Ada Config",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "Buat config Xray atau SSH terlebih dahulu di halaman Config, atau import link untuk mulai menghubungkan.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Button(
+                        onClick = onGoToConfig,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Buat Config")
+                    }
+                    OutlinedButton(
+                        onClick = onOpenImport,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp)
+                    ) {
+                        Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Import Link")
+                    }
+                }
+            }
+        } else {
+            // Config Dropdown Selector
+            var expanded by remember { mutableStateOf(false) }
+
+            ExposedDropdownMenuBox(
+                expanded = expanded && !isActive,
+                onExpandedChange = { if (!isActive) expanded = !expanded }
+            ) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "Config Aktif",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                ModeBadge(active.mode)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                active.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                active.summary(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (!isActive) {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+                        }
                     }
                 }
 
-                Text(
-                    text = active.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = active.summary(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                ExposedDropdownMenu(
+                    expanded = expanded && !isActive,
+                    onDismissRequest = { expanded = false }
+                ) {
+                    config.profiles.forEach { profile ->
+                        DropdownMenuItem(
+                            text = {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            profile.name,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            profile.summary(),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                    ModeBadge(profile.mode)
+                                }
+                            },
+                            onClick = {
+                                onSelectProfile(profile.id)
+                                expanded = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // Connection Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                border = BorderStroke(
+                    1.dp,
+                    if (runtime.status == ConnectionStatus.CONNECTED) {
+                        MaterialTheme.colorScheme.secondary
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    }
+                ),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = when (runtime.status) {
+                                    ConnectionStatus.CONNECTED -> "Tunnel Terhubung"
+                                    ConnectionStatus.CONNECTING -> "Menghubungkan..."
+                                    ConnectionStatus.ERROR -> "Koneksi Gagal"
+                                    ConnectionStatus.DISCONNECTED -> "Siap Dihubungkan"
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Engine otomatis: ${active.mode.label}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        ModeBadge(active.mode)
+                    }
+
+                    if (runtime.statusMessage.isNotBlank() && runtime.status == ConnectionStatus.ERROR) {
+                        Text(
+                            text = runtime.statusMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+
+                    Button(
+                        onClick = { if (isActive) onStopClick() else onStartClick() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isActive) {
+                                Color(0xFFDC2626)
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            }
+                        )
+                    ) {
+                        Icon(
+                            Icons.Default.PowerSettingsNew,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (isActive) "Putuskan Koneksi" else "Hubungkan",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
+                    }
+                }
             }
         }
 
         // Traffic & Ping Row
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             StatCard("Upload", formatBytes(runtime.bytesUp), Modifier.weight(1f))
             StatCard("Download", formatBytes(runtime.bytesDown), Modifier.weight(1f))
@@ -398,10 +798,13 @@ private fun HomeTab(
 
         OutlinedButton(
             onClick = onPingClick,
-            enabled = !isPinging,
-            modifier = Modifier.fillMaxWidth()
+            enabled = !isPinging && active != null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(46.dp),
+            shape = RoundedCornerShape(12.dp)
         ) {
-            Icon(Icons.Default.NetworkPing, contentDescription = null)
+            Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
             Text(if (isPinging) "Mengukur Latency..." else "Cek Ping")
         }
@@ -410,113 +813,172 @@ private fun HomeTab(
 
 @Composable
 private fun StatCard(title: String, value: String, modifier: Modifier = Modifier) {
-    Card(modifier = modifier) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Card(
+        modifier = modifier,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
             Spacer(Modifier.height(4.dp))
-            Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                value,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
 
 @Composable
-private fun ConfigTab(
+private fun ConfigListPage(
     config: VexotunConfig,
     onSelectProfile: (String) -> Unit,
-    onAddProfile: (TunnelMode) -> Unit,
+    onEditProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onOpenImport: () -> Unit,
-    onUpdateProfile: ((TunnelProfile) -> TunnelProfile) -> Unit,
-    onUpdateConfig: ((VexotunConfig) -> VexotunConfig) -> Unit
+    onCreateClick: () -> Unit,
+    onOpenImport: () -> Unit
 ) {
-    val active = config.activeProfile()
-    var showNetworkSettings by rememberSaveable { mutableStateOf(false) }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Profile Actions
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Button(
+                onClick = onCreateClick,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(46.dp),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Buat Config", maxLines = 1)
+            }
+            OutlinedButton(
                 onClick = onOpenImport,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .height(46.dp),
+                shape = RoundedCornerShape(10.dp)
             ) {
                 Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Import Link")
-            }
-            OutlinedButton(
-                onClick = { onAddProfile(TunnelMode.XRAY) },
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Xray")
-            }
-            OutlinedButton(
-                onClick = { onAddProfile(TunnelMode.SSH) },
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("SSH")
+                Text("Import Link", maxLines = 1)
             }
         }
 
-        // Saved Profiles Horizontal Strip
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            config.profiles.forEach { profile ->
-                val isSelected = profile.id == active.id
-                Card(
-                    onClick = { onSelectProfile(profile.id) },
-                    border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isSelected) {
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        }
-                    )
+        if (config.profiles.isEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Text(
+                        "Belum Ada Config",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "Tekan \"Buat Config\" untuk membuat config Xray / SSH baru, atau \"Import Link\" untuk menempel link.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(config.profiles, key = { it.id }) { profile ->
+                    val isSelected = profile.id == config.activeProfile()?.id
+                    Card(
+                        onClick = { onSelectProfile(profile.id) },
+                        border = BorderStroke(
+                            width = if (isSelected) 1.5.dp else 1.dp,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                        ),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
                     ) {
-                        Column {
-                            Text(
-                                profile.name,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                profile.mode.label,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        if (config.profiles.size > 1) {
-                            Spacer(Modifier.width(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    ModeBadge(profile.mode)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        profile.name,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (isSelected) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Icon(
+                                            Icons.Default.CheckCircle,
+                                            contentDescription = "Aktif",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    profile.summary(),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            IconButton(
+                                onClick = { onEditProfile(profile.id) },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Edit,
+                                    contentDescription = "Edit Config",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                             IconButton(
                                 onClick = { onDeleteProfile(profile.id) },
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(36.dp)
                             ) {
                                 Icon(
                                     Icons.Default.DeleteOutline,
-                                    contentDescription = "Hapus Profil",
-                                    modifier = Modifier.size(16.dp)
+                                    contentDescription = "Hapus Config",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
@@ -524,12 +986,27 @@ private fun ConfigTab(
                 }
             }
         }
+    }
+}
 
-        // Profile Name & Mode
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConfigEditorPage(
+    profile: TunnelProfile,
+    onUpdateProfile: ((TunnelProfile) -> TunnelProfile) -> Unit,
+    onDone: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         OutlinedTextField(
-            value = active.name,
+            value = profile.name,
             onValueChange = { v -> onUpdateProfile { it.copy(name = v) } },
-            label = { Text("Nama Profil") },
+            label = { Text("Nama Config") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
@@ -537,7 +1014,7 @@ private fun ConfigTab(
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
             TunnelMode.entries.forEachIndexed { index, mode ->
                 SegmentedButton(
-                    selected = active.mode == mode,
+                    selected = profile.mode == mode,
                     onClick = { onUpdateProfile { it.copy(mode = mode) } },
                     shape = SegmentedButtonDefaults.itemShape(index, TunnelMode.entries.size)
                 ) {
@@ -546,51 +1023,64 @@ private fun ConfigTab(
             }
         }
 
-        if (active.mode == TunnelMode.XRAY) {
-            XrayProfileEditor(profile = active, onUpdateProfile = onUpdateProfile)
+        if (profile.mode == TunnelMode.XRAY) {
+            XrayProfileEditor(profile = profile, onUpdateProfile = onUpdateProfile)
         } else {
-            SshProfileEditor(profile = active, onUpdateProfile = onUpdateProfile)
+            SshProfileEditor(profile = profile, onUpdateProfile = onUpdateProfile)
         }
 
-        // Collapsible Network Settings
-        Card(
-            onClick = { showNetworkSettings = !showNetworkSettings },
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        Spacer(Modifier.height(4.dp))
+        Button(
+            onClick = onDone,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(10.dp)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Pengaturan Jaringan (DNS & MTU)", fontWeight = FontWeight.Medium)
-                Icon(
-                    if (showNetworkSettings) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = null
-                )
-            }
+            Text("Selesai", fontWeight = FontWeight.Bold)
         }
+    }
+}
 
-        AnimatedVisibility(visible = showNetworkSettings) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = config.dnsServer,
-                    onValueChange = { v -> onUpdateConfig { it.copy(dnsServer = v) } },
-                    label = { Text("DNS") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1.5f)
-                )
-                OutlinedTextField(
-                    value = config.mtu.toString(),
-                    onValueChange = { v ->
-                        val m = v.filter(Char::isDigit).toIntOrNull() ?: 1500
-                        onUpdateConfig { it.copy(mtu = m) }
-                    },
-                    label = { Text("MTU") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun <T> CompactDropdown(
+    label: String,
+    selectedLabel: String,
+    options: List<T>,
+    optionLabel: (T) -> String,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(optionLabel(option)) },
+                    onClick = {
+                        onSelect(option)
+                        expanded = false
+                    }
                 )
             }
         }
@@ -604,27 +1094,19 @@ private fun XrayProfileEditor(
 ) {
     val x = profile.xray
 
-    Text("Protokol", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        XrayProtocol.entries.forEach { proto ->
-            FilterChip(
-                selected = x.protocol == proto,
-                onClick = { onUpdateProfile { it.copy(xray = it.xray.copy(protocol = proto)) } },
-                label = { Text(proto.label) }
-            )
-        }
-    }
+    CompactDropdown(
+        label = "Protokol",
+        selectedLabel = x.protocol.label,
+        options = XrayProtocol.entries,
+        optionLabel = { it.label },
+        onSelect = { proto -> onUpdateProfile { it.copy(xray = it.xray.copy(protocol = proto)) } }
+    )
 
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
             value = x.address,
             onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(address = v)) } },
-            label = { Text("Address / Host") },
+            label = { Text("Host / Address") },
             singleLine = true,
             modifier = Modifier.weight(2f)
         )
@@ -666,21 +1148,13 @@ private fun XrayProfileEditor(
         )
     }
 
-    Text("Transport", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        XrayTransport.entries.forEach { net ->
-            FilterChip(
-                selected = x.network == net,
-                onClick = { onUpdateProfile { it.copy(xray = it.xray.copy(network = net)) } },
-                label = { Text(net.label) }
-            )
-        }
-    }
+    CompactDropdown(
+        label = "Transport",
+        selectedLabel = x.network.label,
+        options = XrayTransport.entries,
+        optionLabel = { it.label },
+        onSelect = { net -> onUpdateProfile { it.copy(xray = it.xray.copy(network = net)) } }
+    )
 
     if (x.network != XrayTransport.TCP) {
         OutlinedTextField(
@@ -711,33 +1185,45 @@ private fun XrayProfileEditor(
         )
     }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+    Card(
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
-        Text("Gunakan TLS")
-        Switch(
-            checked = x.tls,
-            onCheckedChange = { checked ->
-                onUpdateProfile { it.copy(xray = it.xray.copy(tls = checked)) }
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Gunakan TLS", style = MaterialTheme.typography.bodyMedium)
+                Switch(
+                    checked = x.tls,
+                    onCheckedChange = { checked ->
+                        onUpdateProfile { it.copy(xray = it.xray.copy(tls = checked)) }
+                    }
+                )
             }
-        )
-    }
 
-    if (x.tls) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Allow Insecure (lewati verifikasi sertifikat)")
-            Switch(
-                checked = x.allowInsecure,
-                onCheckedChange = { checked ->
-                    onUpdateProfile { it.copy(xray = it.xray.copy(allowInsecure = checked)) }
+            if (x.tls) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Allow Insecure",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = x.allowInsecure,
+                        onCheckedChange = { checked ->
+                            onUpdateProfile { it.copy(xray = it.xray.copy(allowInsecure = checked)) }
+                        }
+                    )
                 }
-            )
+            }
         }
     }
 }
@@ -750,21 +1236,13 @@ private fun SshProfileEditor(
     val s = profile.ssh
     var showAdvanced by rememberSaveable { mutableStateOf(false) }
 
-    Text("Transport", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        SshTransport.entries.forEach { t ->
-            FilterChip(
-                selected = s.transport == t,
-                onClick = { onUpdateProfile { it.copy(ssh = it.ssh.copy(transport = t)) } },
-                label = { Text(t.label) }
-            )
-        }
-    }
+    CompactDropdown(
+        label = "Transport",
+        selectedLabel = s.transport.label,
+        options = SshTransport.entries,
+        optionLabel = { it.label },
+        onSelect = { t -> onUpdateProfile { it.copy(ssh = it.ssh.copy(transport = t)) } }
+    )
 
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
@@ -837,12 +1315,13 @@ private fun SshProfileEditor(
     if (s.transport != SshTransport.DIRECT) {
         Card(
             onClick = { showAdvanced = !showAdvanced },
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -860,7 +1339,7 @@ private fun SshProfileEditor(
                     OutlinedTextField(
                         value = s.proxyHost,
                         onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(proxyHost = v)) } },
-                        label = { Text("Proxy Host (opsional)") },
+                        label = { Text("Proxy Host") },
                         singleLine = true,
                         modifier = Modifier.weight(2f)
                     )
@@ -909,7 +1388,7 @@ private fun SshProfileEditor(
 }
 
 @Composable
-private fun LogsTab(
+private fun LogsPage(
     runtime: VpnRuntimeState,
     onClear: () -> Unit
 ) {
@@ -922,56 +1401,78 @@ private fun LogsTab(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Log Koneksi (${runtime.logs.size})", fontWeight = FontWeight.Bold)
-            Row {
-                IconButton(onClick = {
-                    val text = runtime.logs.joinToString("\n") { "${it.level}: ${it.message}" }
-                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("vexotun_logs", text))
-                }) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "Salin Log")
+            Text(
+                "${runtime.logs.size} baris log",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        val text = runtime.logs.joinToString("\n") { "${it.level}: ${it.message}" }
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("vexotun_logs", text))
+                    },
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Salin", fontSize = 12.sp)
                 }
-                IconButton(onClick = onClear) {
-                    Icon(Icons.Default.DeleteOutline, contentDescription = "Bersihkan Log")
+                OutlinedButton(
+                    onClick = onClear,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Hapus", fontSize = 12.sp)
                 }
             }
         }
 
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0xFF101418))
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+        Card(
+            modifier = Modifier.fillMaxSize(),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0A0E14))
         ) {
-            items(runtime.logs) { entry ->
-                val color = when (entry.level) {
-                    "ERROR" -> Color(0xFFFF6B6B)
-                    "WARN" -> Color(0xFFFFD93D)
-                    else -> Color(0xFFA8E6CF)
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(runtime.logs) { entry ->
+                    val color = when (entry.level) {
+                        "ERROR" -> Color(0xFFF87171)
+                        "WARN" -> Color(0xFFFBBF24)
+                        else -> Color(0xFF34D399)
+                    }
+                    Text(
+                        text = entry.message,
+                        color = color,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp
+                    )
                 }
-                Text(
-                    text = entry.message,
-                    color = color,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp
-                )
             }
         }
     }
 }
 
 @Composable
-private fun SplitTunnelTab(
+private fun SplitTunnelPage(
     config: VexotunConfig,
     apps: List<InstalledApp>,
     onSplitModeChange: (SplitTunnelMode) -> Unit,
@@ -992,7 +1493,6 @@ private fun SplitTunnelTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text("Filter Aplikasi", fontWeight = FontWeight.Bold)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1025,35 +1525,127 @@ private fun SplitTunnelTab(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 items(filtered, key = { it.packageName }) { app ->
                     val checked = app.packageName in config.splitPackages
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
                             .clickable { onTogglePackage(app.packageName) }
-                            .padding(vertical = 8.dp),
+                            .padding(vertical = 6.dp, horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Checkbox(checked = checked, onCheckedChange = { onTogglePackage(app.packageName) })
                         Spacer(Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(app.label, fontWeight = FontWeight.Medium)
+                            Text(
+                                app.label,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                             Text(
                                 app.packageName,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
                 }
             }
         } else {
-            Text(
-                "Semua trafik aplikasi di perangkat akan melewati tunnel VPN.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Text(
+                    "Semua trafik aplikasi di perangkat akan melewati tunnel VPN.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsPage(
+    config: VexotunConfig,
+    onUpdateConfig: ((VexotunConfig) -> VexotunConfig) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Card(
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Mode Gelap", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Tampilan gelap untuk kenyamanan mata",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = config.darkTheme,
+                    onCheckedChange = { dark -> onUpdateConfig { it.copy(darkTheme = dark) } }
+                )
+            }
+        }
+
+        Card(
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("Jaringan", fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = config.dnsServer,
+                        onValueChange = { v -> onUpdateConfig { it.copy(dnsServer = v) } },
+                        label = { Text("DNS") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1.5f)
+                    )
+                    OutlinedTextField(
+                        value = config.mtu.toString(),
+                        onValueChange = { v ->
+                            val m = v.filter(Char::isDigit).toIntOrNull() ?: 1500
+                            onUpdateConfig { it.copy(mtu = m) }
+                        },
+                        label = { Text("MTU") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
         }
     }
 }

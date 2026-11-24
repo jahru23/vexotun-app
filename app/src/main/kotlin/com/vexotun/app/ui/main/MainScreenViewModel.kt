@@ -60,22 +60,33 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun updateActiveProfile(transform: (TunnelProfile) -> TunnelProfile) = updateConfig { cfg ->
-        val activeId = cfg.activeProfile().id
+        val activeId = cfg.activeProfile()?.id ?: return@updateConfig cfg
         val updatedList = cfg.profiles.map { p ->
             if (p.id == activeId) transform(p) else p
         }
         cfg.copy(profiles = updatedList)
     }
 
-    fun addBlankProfile(mode: TunnelMode) = updateConfig { cfg ->
+    fun updateProfile(profileId: String, transform: (TunnelProfile) -> TunnelProfile) = updateConfig { cfg ->
+        val updatedList = cfg.profiles.map { p ->
+            if (p.id == profileId) transform(p) else p
+        }
+        cfg.copy(profiles = updatedList)
+    }
+
+    fun createProfile(mode: TunnelMode): String {
+        val count = _config.value.profiles.count { it.mode == mode } + 1
         val newProfile = TunnelProfile(
-            name = if (mode == TunnelMode.XRAY) "Xray Baru" else "SSH Baru",
+            name = "${mode.label} #$count",
             mode = mode
         )
-        cfg.copy(
-            profiles = cfg.profiles + newProfile,
-            activeProfileId = newProfile.id
-        )
+        updateConfig { cfg ->
+            cfg.copy(
+                profiles = cfg.profiles + newProfile,
+                activeProfileId = newProfile.id
+            )
+        }
+        return newProfile.id
     }
 
     fun importFromLink(rawInput: String): Result<TunnelProfile> {
@@ -92,9 +103,12 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun deleteProfile(profileId: String) = updateConfig { cfg ->
-        if (cfg.profiles.size <= 1) return@updateConfig cfg
         val remaining = cfg.profiles.filterNot { it.id == profileId }
-        val nextActive = if (cfg.activeProfileId == profileId) remaining.first().id else cfg.activeProfileId
+        val nextActive = when {
+            remaining.isEmpty() -> ""
+            cfg.activeProfileId == profileId -> remaining.first().id
+            else -> cfg.activeProfileId
+        }
         cfg.copy(profiles = remaining, activeProfileId = nextActive)
     }
 
@@ -129,7 +143,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             val ms = withContext(Dispatchers.IO) {
                 val active = _config.value.activeProfile()
-                when (active.mode) {
+                when (active?.mode) {
                     TunnelMode.SSH -> {
                         if (active.ssh.host.isNotBlank()) {
                             Core.pingTCP(active.ssh.host.trim(), active.ssh.port, 3000)
@@ -144,6 +158,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                             Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
                         }
                     }
+                    null -> Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
                 }
             }
             TunnelState.setPing(if (ms >= 0) ms else null)

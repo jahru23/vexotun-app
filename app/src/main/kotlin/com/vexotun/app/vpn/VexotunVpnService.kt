@@ -62,6 +62,12 @@ class VexotunVpnService : VpnService() {
     private fun startTunnel(config: VexotunConfig) {
         serviceScope.launch {
             val profile = config.activeProfile()
+            if (profile == null) {
+                TunnelState.setStatus(ConnectionStatus.ERROR, "Belum ada config yang dipilih")
+                TunnelState.appendLog("ERROR", "Gagal memulai: belum ada config")
+                stopSelf()
+                return@launch
+            }
             try {
                 TunnelState.setStatus(ConnectionStatus.CONNECTING, "Menghubungkan ke ${profile.name}...")
                 TunnelState.appendLog("INFO", "Memulai ${profile.mode.label}: ${profile.name}")
