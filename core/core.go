@@ -264,15 +264,24 @@ func Stop() {
 // IsRunning returns whether the tunnel core is currently active.
 func IsRunning() bool {
 	stateMu.Lock()
-	defer stateMu.Unlock()
-	return isRunning
+	running := isRunning
+	sshEng := activeSSH
+	stateMu.Unlock()
+	if running && sshEng != nil && !sshEng.Alive() {
+		return false
+	}
+	return running
 }
 
 // GetStats returns JSON-encoded traffic and state stats.
 func GetStats() string {
 	stateMu.Lock()
 	running := isRunning
+	sshEng := activeSSH
 	stateMu.Unlock()
+	if running && sshEng != nil && !sshEng.Alive() {
+		running = false
+	}
 
 	b, _ := json.Marshal(TunnelStats{
 		Running:   running,

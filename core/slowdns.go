@@ -65,6 +65,13 @@ func (c *vexSlowDNSConn) Close() error {
 	return err
 }
 
+func (c *vexSlowDNSConn) IsHealthy(maxSilence time.Duration) bool {
+	if c.cli == nil {
+		return false
+	}
+	return c.cli.IsHealthy(maxSilence)
+}
+
 func makeProtectedPacketFactory(protector SocketProtector) vxtunnel.PacketFactory {
 	return func(ctx context.Context, network, address string) (net.PacketConn, error) {
 		lc := net.ListenConfig{
@@ -104,7 +111,16 @@ func buildSlowDNSResolvers(cfg SSHConfig) []string {
 		if h := strings.TrimSpace(cfg.Host); h != "" && !strings.EqualFold(h, cfg.Nameserver) {
 			raw = append(raw, net.JoinHostPort(strings.Trim(h, "[]"), "53"))
 		}
-		raw = append(raw, "1.1.1.1:53", "8.8.8.8:53")
+		// TKP Indonesia public & anycast DNS candidates probed in parallel (~1.2s total).
+		raw = append(raw,
+			"1.1.1.1:53",
+			"1.0.0.1:53",
+			"8.8.8.8:53",
+			"8.8.4.4:53",
+			"9.9.9.9:53",
+			"94.140.14.14:53",
+			"208.67.222.222:53",
+		)
 	}
 	if len(raw) == 0 {
 		raw = []string{"8.8.8.8:53"}

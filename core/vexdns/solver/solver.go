@@ -294,6 +294,37 @@ func ProbeAll(ctx context.Context, cfg Config) ([]Candidate, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("solver: resolvers responded but usable KCP MTU could not be established")
 	}
+
+	// Phase 2.5: fire a short 5-packet burst on top unique candidates to measure real packet loss & loaded throughput.
+	burstLimit := min(6, len(candidates))
+	var bwg sync.WaitGroup
+	for i := 0; i < burstLimit; i++ {
+		i := i
+		bwg.Add(1)
+		go func() {
+			defer bwg.Done()
+			c := &candidates[i]
+			okCnt, elapsed := measureBurst(ctx, cfg.ListenPacket, c.Resolver, cfg.Domain, cfg.Pubkey, c.QType, uint16(c.DownBudget), c.MaxQueryUDP, 5, minDuration(timeout, 700*time.Millisecond))
+			rel := float64(okCnt) / 5.0
+			c.Score *= rel * rel
+			if okCnt > 0 && elapsed > 0 {
+				mbps := (float64(okCnt*c.PayloadBytes) * 8.0) / (elapsed.Seconds() * 1_000_000.0)
+				if mbps > 10.0 {
+					mbps = 10.0
+				}
+				c.Score *= 1.0 + mbps*0.08
+				c.RTT = elapsed / time.Duration(okCnt)
+			}
+		}()
+	}
+	bwg.Wait()
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Score != candidates[j].Score {
+			return candidates[i].Score > candidates[j].Score
+		}
+		return candidates[i].PayloadBytes > candidates[j].PayloadBytes
+	})
 	return candidates, nil
 }
 
@@ -335,6 +366,10 @@ func scoreCandidate(domain dnswire.Name, resolver string, orderedResolvers []str
 		score *= 1.08
 	case dnswire.RRTypeNULL:
 		score *= 1.04
+	}
+	// Prefer IPv4 resolvers on equal footing to avoid dual-stack tun0 IPv6 route quirks on mobile.
+	if !isIPv6Addr(resolver) {
+		score *= 1.12
 	}
 	// Slight preference for earlier user-listed resolvers (e.g., active carrier DNS before public fallback).
 	for idx, r := range orderedResolvers {
@@ -417,20 +452,131 @@ func sendProbe(ctx context.Context, listenPacket tunnel.PacketFactory, resolver 
 	}
 }
 
-// StripedResolvers selects up to 3 verified resolvers matching cand's (QType, DownBudget, MaxQueryUDP)
+func isIPv6Addr(hostPort string) bool {
+	h, _, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		h = strings.Trim(hostPort, "[]")
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.To4() == nil
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func measureBurst(ctx context.Context, listenPacket tunnel.PacketFactory, resolver string, domain dnswire.Name, pubkey []byte, qtype uint16, targetRespBytes uint16, maxQueryUDP int, count int, timeout time.Duration) (int, time.Duration) {
+	bCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	rAddr, err := net.ResolveUDPAddr("udp", resolver)
+	if err != nil {
+		return 0, 0
+	}
+	netFam := "udp4"
+	if rAddr.IP != nil && rAddr.IP.To4() == nil && !strings.Contains(resolver, ".") {
+		netFam = "udp6"
+	}
+	var conn net.PacketConn
+	if listenPacket != nil {
+		conn, err = listenPacket(bCtx, netFam, ":0")
+	} else {
+		conn, err = net.ListenPacket(netFam, ":0")
+	}
+	if err != nil {
+		return 0, 0
+	}
+	defer conn.Close()
+
+	rawLen := protocol.MaxQueryPayloadForUDP(domain, maxQueryUDP)
+	expected := make(map[uint16][4]byte, count)
+	wires := make([][]byte, 0, count)
+	baseID := uint16(time.Now().UnixNano() & 0xffff)
+	for i := 0; i < count; i++ {
+		reqPayload, req, err := protocol.EncodeProbeRequest(pubkey, targetRespBytes, rawLen)
+		if err != nil {
+			continue
+		}
+		qn, err := dnswire.EncodeQueryName(reqPayload, domain)
+		if err != nil {
+			continue
+		}
+		id := baseID + uint16(i) + 1
+		msg := dnswire.Message{
+			ID:         id,
+			Flags:      0x0100,
+			Question:   []dnswire.Question{{Name: qn, Type: qtype, Class: dnswire.ClassIN}},
+			Additional: []dnswire.RR{{Type: dnswire.RRTypeOPT, Class: max(uint16(512), targetRespBytes)}},
+		}
+		wire, err := msg.WireFormat()
+		if err != nil {
+			continue
+		}
+		expected[id] = req.Nonce
+		wires = append(wires, wire)
+	}
+	if len(wires) == 0 {
+		return 0, 0
+	}
+
+	dl, _ := bCtx.Deadline()
+	_ = conn.SetDeadline(dl)
+	start := time.Now()
+	for idx, w := range wires {
+		if idx > 0 {
+			time.Sleep(2 * time.Millisecond)
+		}
+		_, _ = conn.WriteTo(w, rAddr)
+	}
+
+	okCount := 0
+	lastOk := start
+	buf := make([]byte, 4096)
+	for okCount < len(wires) {
+		n, _, err := conn.ReadFrom(buf)
+		if err != nil {
+			break
+		}
+		resp, err := dnswire.MessageFromWireFormat(buf[:n])
+		if err != nil || resp.Flags&0x8000 == 0 || resp.Rcode() != dnswire.RcodeNoError {
+			continue
+		}
+		nonce, ok := expected[resp.ID]
+		if !ok {
+			continue
+		}
+		payload, err := dnswire.DecodeResponseRRs(&resp, qtype, domain)
+		if err != nil {
+			continue
+		}
+		if _, err := protocol.DecodeProbeResponse(pubkey, nonce, qtype, payload); err != nil {
+			continue
+		}
+		delete(expected, resp.ID)
+		okCount++
+		lastOk = time.Now()
+	}
+	return okCount, lastOk.Sub(start)
+}
+
+// StripedResolvers selects up to 3 verified same-family resolvers matching cand's (QType, DownBudget, MaxQueryUDP)
 // to multiply effective throughput across per-IP recursive QPS limits.
 func StripedResolvers(candidates []Candidate, cand Candidate) []string {
 	out := []string{cand.Resolver}
+	wantV6 := isIPv6Addr(cand.Resolver)
 	maxRTT := cand.RTT * 2
-	if maxRTT < 120*time.Millisecond {
-		maxRTT = 120 * time.Millisecond
+	if maxRTT < 140*time.Millisecond {
+		maxRTT = 140 * time.Millisecond
 	}
 	for _, other := range candidates {
 		if len(out) >= 3 {
 			break
 		}
-		if other.Resolver == cand.Resolver || other.QType != cand.QType ||
-			other.DownBudget != cand.DownBudget || other.MaxQueryUDP != cand.MaxQueryUDP {
+		if other.Resolver == cand.Resolver || isIPv6Addr(other.Resolver) != wantV6 ||
+			other.QType != cand.QType || other.DownBudget != cand.DownBudget || other.MaxQueryUDP != cand.MaxQueryUDP {
 			continue
 		}
 		if other.RTT <= maxRTT {

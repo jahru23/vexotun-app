@@ -99,7 +99,7 @@ func DialClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		cfg.KCPWindow = 512
 	}
 	if cfg.MaxInFlight <= 0 {
-		cfg.MaxInFlight = 44
+		cfg.MaxInFlight = 56
 	}
 
 	addrsRaw := cfg.DNSServerAddrs
@@ -198,7 +198,8 @@ func DialClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		return nil, err
 	}
 	kcpConn.SetStreamMode(true)
-	kcpConn.SetNoDelay(1, 10, 2, 1)
+	kcpConn.SetNoDelay(1, 10, 1, 1)
+	kcpConn.SetWriteDelay(false)
 	kcpConn.SetACKNoDelay(true)
 	kcpConn.SetWindowSize(cfg.KCPWindow, cfg.KCPWindow)
 	if !kcpConn.SetMtu(sessionMTU) {
@@ -320,6 +321,18 @@ func (c *Client) IsClosed() bool {
 	return c.smuxSess != nil && c.smuxSess.IsClosed()
 }
 
+// IsHealthy returns false if the client has sent queries recently without any valid DNS reply for maxSilence.
+func (c *Client) IsHealthy(maxSilence time.Duration) bool {
+	if c.IsClosed() {
+		return false
+	}
+	if c.SentQueries.Load() <= 8 {
+		return true
+	}
+	lastReply := time.Unix(0, c.LastValidReplyNs.Load())
+	return time.Since(lastReply) <= maxSilence
+}
+
 // Close shuts down smux, Noise, KCP, and the underlying UDP socket.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
@@ -392,23 +405,29 @@ func (c *Client) dnsRecvLoop(conn net.PacketConn) {
 	}
 }
 
-func (c *Client) activeInFlight() int {
+func (c *Client) activeInFlight() (int, int) {
 	now := time.Now()
+	expired := 0
 	c.inflightMu.Lock()
 	for id, sentAt := range c.inflight {
-		if now.Sub(sentAt) > 1200*time.Millisecond {
+		if now.Sub(sentAt) > 450*time.Millisecond {
 			delete(c.inflight, id)
+			expired++
 		}
 	}
 	n := len(c.inflight)
 	c.inflightMu.Unlock()
-	return n
+	return n, expired
 }
 
 func (c *Client) dnsPollLoop() {
 	var msgID uint16 = 1
-	idleWait := 15 * time.Millisecond
-	const maxIdleWait = 300 * time.Millisecond
+	idleWait := 12 * time.Millisecond
+	const maxIdleWait = 280 * time.Millisecond
+	curWindow := 24
+	if c.cfg.MaxInFlight < curWindow {
+		curWindow = c.cfg.MaxInFlight
+	}
 
 	ticker := time.NewTimer(idleWait)
 	defer ticker.Stop()
@@ -451,7 +470,7 @@ func (c *Client) dnsPollLoop() {
 
 	isBurstActive := func() bool {
 		now := time.Now().UnixNano()
-		const burstWindow = int64(750 * time.Millisecond)
+		const burstWindow = int64(1200 * time.Millisecond)
 		return (now-c.lastDataRxNs.Load()) < burstWindow || (now-c.lastDataTxNs.Load()) < burstWindow
 	}
 
@@ -461,28 +480,46 @@ func (c *Client) dnsPollLoop() {
 
 	lastReplies := uint64(0)
 	for {
-		// 1. Drain any queued upstream KCP segments immediately (respecting a generous pipeline cap).
+		active, expired := c.activeInFlight()
+		if expired > 0 {
+			curWindow -= max(2, expired/2)
+			if curWindow < 12 {
+				curWindow = 12
+			}
+		} else if isBurstActive() && curWindow < c.cfg.MaxInFlight {
+			curWindow += 2
+			if curWindow > c.cfg.MaxInFlight {
+				curWindow = c.cfg.MaxInFlight
+			}
+		}
+
+		// 1. Drain any queued upstream KCP segments cleanly up to generous upstream cap.
 		sentBurst := false
-		for c.activeInFlight() < c.cfg.MaxInFlight*2 {
+		maxUpInFlight := curWindow + 16
+		for active < maxUpInFlight {
 			pkts := c.ttConn.PopUpstreamUpTo(c.addr, c.maxUpPayload)
 			if len(pkts) == 0 {
 				break
 			}
 			c.lastDataTxNs.Store(time.Now().UnixNano())
 			sendOne(pkts)
+			active++
 			sentBurst = true
 		}
 
-		// 2. When actively downloading/uploading, maintain cfg.MaxInFlight concurrent polls in flight
-		//    to saturate bandwidth across high-RTT carrier resolvers.
-		if isBurstActive() {
-			for c.activeInFlight() < c.cfg.MaxInFlight {
+		// 2. Smooth paced pipeline refill (max 8 polls per 5ms tick to avoid microburst drops).
+		if isBurstActive() && active < curWindow {
+			need := curWindow - active
+			if need > 8 {
+				need = 8
+			}
+			for i := 0; i < need; i++ {
 				sendOne(nil)
 				sentBurst = true
 			}
 		}
-		if sentBurst {
-			idleWait = 12 * time.Millisecond
+		if sentBurst || isBurstActive() {
+			idleWait = 5 * time.Millisecond
 		}
 
 		if !ticker.Stop() {
@@ -497,18 +534,17 @@ func (c *Client) dnsPollLoop() {
 		case <-c.closeCh:
 			return
 		case <-c.txNotify:
-			idleWait = 12 * time.Millisecond
+			idleWait = 5 * time.Millisecond
 		case <-ticker.C:
 			curReplies := c.ValidReplies.Load()
 			if curReplies == lastReplies {
-				// Only increment stall counter when a full >=1s interval passes with zero replies
 				if time.Since(time.Unix(0, c.LastValidReplyNs.Load())) >= time.Second {
 					c.ConsecTimeouts.Add(1)
 				}
 			}
 			lastReplies = curReplies
 
-			if c.activeInFlight() == 0 || isBurstActive() {
+			if active == 0 && !isBurstActive() {
 				sendOne(nil)
 			}
 			if !isBurstActive() && idleWait < maxIdleWait {

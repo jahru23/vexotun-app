@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -45,12 +46,16 @@ type SSHConfig struct {
 }
 
 type sshEngine struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	client    *ssh.Client
-	listener  net.Listener
-	wg        sync.WaitGroup
-	socksAddr string
+	ctx           context.Context
+	cancel        context.CancelFunc
+	transportConn net.Conn
+	client        *ssh.Client
+	listener      net.Listener
+	wg            sync.WaitGroup
+	socksAddr     string
+	dead          atomic.Bool
+	connsMu       sync.Mutex
+	activeConns   map[net.Conn]struct{}
 }
 
 func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string, socksPort int, protector SocketProtector) (*sshEngine, error) {
@@ -127,14 +132,17 @@ func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string,
 	}
 
 	eng := &sshEngine{
-		ctx:       ctx,
-		cancel:    cancel,
-		client:    client,
-		listener:  ln,
-		socksAddr: socksAddr,
+		ctx:           ctx,
+		cancel:        cancel,
+		transportConn: conn,
+		client:        client,
+		listener:      ln,
+		socksAddr:     socksAddr,
+		activeConns:   make(map[net.Conn]struct{}),
 	}
 
-	eng.wg.Add(2)
+	eng.wg.Add(3)
+	go eng.waitExitLoop()
 	go eng.keepAliveLoop()
 	go eng.acceptLoop()
 
@@ -261,9 +269,34 @@ func dialSSHTransport(ctx context.Context, cfg SSHConfig, protector SocketProtec
 	}
 }
 
+func (e *sshEngine) Alive() bool {
+	if e.dead.Load() || e.ctx.Err() != nil {
+		return false
+	}
+	if hc, ok := e.transportConn.(interface{ IsHealthy(time.Duration) bool }); ok {
+		if !hc.IsHealthy(14 * time.Second) {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *sshEngine) waitExitLoop() {
+	defer e.wg.Done()
+	_ = e.client.Wait()
+	if e.ctx.Err() == nil {
+		if !e.dead.Swap(true) {
+			logMsg("WARN", "Koneksi SSH tertutup dari server")
+		}
+		if e.listener != nil {
+			_ = e.listener.Close()
+		}
+	}
+}
+
 func (e *sshEngine) keepAliveLoop() {
 	defer e.wg.Done()
-	ticker := time.NewTicker(25 * time.Second)
+	ticker := time.NewTicker(12 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -271,9 +304,42 @@ func (e *sshEngine) keepAliveLoop() {
 		case <-e.ctx.Done():
 			return
 		case <-ticker.C:
-			_, _, err := e.client.SendRequest("keepalive@vexotun", true, nil)
-			if err != nil {
-				logMsg("WARN", "SSH keepalive failed: %v", err)
+			if e.dead.Load() {
+				return
+			}
+			if hc, ok := e.transportConn.(interface{ IsHealthy(time.Duration) bool }); ok && !hc.IsHealthy(14 * time.Second) {
+				if e.ctx.Err() == nil && !e.dead.Swap(true) {
+					logMsg("WARN", "Jalur SlowDNS terhenti (timeout), memutus sesi untuk reconnect...")
+				}
+				_ = e.transportConn.Close()
+				_ = e.client.Close()
+				return
+			}
+
+			kaDone := make(chan error, 1)
+			go func() {
+				_, _, err := e.client.SendRequest("keepalive@vexotun", true, nil)
+				kaDone <- err
+			}()
+
+			select {
+			case <-e.ctx.Done():
+				return
+			case err := <-kaDone:
+				if err != nil {
+					if e.ctx.Err() == nil && !e.dead.Swap(true) {
+						logMsg("WARN", "SSH keepalive failed: %v", err)
+					}
+					_ = e.transportConn.Close()
+					_ = e.client.Close()
+					return
+				}
+			case <-time.After(8 * time.Second):
+				if e.ctx.Err() == nil && !e.dead.Swap(true) {
+					logMsg("WARN", "SSH keepalive timeout (>8s)")
+				}
+				_ = e.transportConn.Close()
+				_ = e.client.Close()
 				return
 			}
 		}
@@ -302,7 +368,15 @@ func (e *sshEngine) acceptLoop() {
 }
 
 func (e *sshEngine) handleSocks5(clientConn net.Conn) {
-	defer clientConn.Close()
+	e.connsMu.Lock()
+	e.activeConns[clientConn] = struct{}{}
+	e.connsMu.Unlock()
+	defer func() {
+		e.connsMu.Lock()
+		delete(e.activeConns, clientConn)
+		e.connsMu.Unlock()
+		_ = clientConn.Close()
+	}()
 	_ = clientConn.SetDeadline(time.Now().Add(15 * time.Second))
 
 	var hdr [2]byte
@@ -366,10 +440,38 @@ func (e *sshEngine) handleSocks5(clientConn net.Conn) {
 
 	_ = clientConn.SetDeadline(time.Time{})
 	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
-	remoteConn, err := e.client.Dial("tcp", target)
-	if err != nil {
+	type dialRes struct {
+		c   net.Conn
+		err error
+	}
+	dCh := make(chan dialRes, 1)
+	go func() {
+		rc, derr := e.client.Dial("tcp", target)
+		dCh <- dialRes{c: rc, err: derr}
+	}()
+	var remoteConn net.Conn
+	select {
+	case <-e.ctx.Done():
+		go func() {
+			if r := <-dCh; r.c != nil {
+				_ = r.c.Close()
+			}
+		}()
+		return
+	case <-time.After(12 * time.Second):
+		go func() {
+			if r := <-dCh; r.c != nil {
+				_ = r.c.Close()
+			}
+		}()
 		_, _ = clientConn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
+	case r := <-dCh:
+		if r.err != nil {
+			_, _ = clientConn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+			return
+		}
+		remoteConn = r.c
 	}
 	defer remoteConn.Close()
 
@@ -401,14 +503,32 @@ func (e *sshEngine) handleSocks5(clientConn net.Conn) {
 }
 
 func (e *sshEngine) Stop() {
+	e.dead.Store(true)
 	e.cancel()
 	if e.listener != nil {
 		_ = e.listener.Close()
 	}
+	if e.transportConn != nil {
+		_ = e.transportConn.Close()
+	}
 	if e.client != nil {
 		_ = e.client.Close()
 	}
-	e.wg.Wait()
+	e.connsMu.Lock()
+	for c := range e.activeConns {
+		_ = c.Close()
+	}
+	e.connsMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		e.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+	}
 }
 
 // wsNetConn adapts *websocket.Conn to net.Conn for ssh.NewClientConn.

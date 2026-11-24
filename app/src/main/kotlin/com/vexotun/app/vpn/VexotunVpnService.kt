@@ -58,6 +58,9 @@ class VexotunVpnService : VpnService() {
     private var activeNetworkHandle: Long? = null
 
     @Volatile
+    private var networkWasLost: Boolean = false
+
+    @Volatile
     private var isStopping: Boolean = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -276,11 +279,26 @@ class VexotunVpnService : VpnService() {
     private fun startStatsLoop() {
         statsJob?.cancel()
         statsJob = serviceScope.launch {
-            while (isActive && Core.isRunning()) {
-                runCatching {
-                    val raw = Core.getStats()
-                    val stats = json.decodeFromString<CoreStats>(raw)
+            while (isActive && !isStopping) {
+                val stats = runCatching {
+                    json.decodeFromString<CoreStats>(Core.getStats())
+                }.getOrNull()
+                if (stats != null) {
                     TunnelState.updateTraffic(stats.bytesUp, stats.bytesDown)
+                    if (!stats.running && !isStopping) {
+                        val cfg = ConfigStore(this@VexotunVpnService).load()
+                        if (cfg.autoReconnect) {
+                            TunnelState.appendLog("WARN", "Tunnel berhenti merespons, menyambung ulang otomatis...")
+                            scheduleReconnect()
+                        } else {
+                            TunnelState.appendLog("ERROR", "Tunnel terputus.")
+                            TunnelState.setStatus(ConnectionStatus.ERROR, "Tunnel terputus")
+                            cleanupResources()
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                            stopSelf()
+                        }
+                        return@launch
+                    }
                 }
                 delay(1000L)
             }
@@ -309,16 +327,18 @@ class VexotunVpnService : VpnService() {
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
+        networkWasLost = false
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 if (isStopping) return
                 val handle = network.networkHandle
                 val prev = activeNetworkHandle
-                if (prev == null) {
+                if (prev == null && !networkWasLost) {
                     activeNetworkHandle = handle
                     return
                 }
-                if (prev != handle) {
+                if (prev != handle || networkWasLost) {
+                    networkWasLost = false
                     activeNetworkHandle = handle
                     scheduleReconnect()
                 }
@@ -328,6 +348,7 @@ class VexotunVpnService : VpnService() {
                 if (isStopping) return
                 if (activeNetworkHandle == network.networkHandle) {
                     activeNetworkHandle = null
+                    networkWasLost = true
                 }
             }
         }

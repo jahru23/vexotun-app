@@ -426,8 +426,6 @@ func (r *clientResponder) run(key string) {
 					return
 				case <-notifyCh:
 					holdTimer.Stop()
-					// Tiny 1ms coalesce only if queue just woke up with a single small packet.
-					time.Sleep(1 * time.Millisecond)
 				case <-holdTimer.C:
 				}
 			}
@@ -502,7 +500,8 @@ func (s *Server) acceptSessions() error {
 		}
 		sessionMTU := s.computeSessionMTU(conn.RemoteAddr().String())
 		conn.SetStreamMode(true)
-		conn.SetNoDelay(1, 10, 2, 1)
+		conn.SetNoDelay(1, 10, 1, 1)
+		conn.SetWriteDelay(false)
 		conn.SetACKNoDelay(true)
 		conn.SetWindowSize(s.cfg.KCPWindow, s.cfg.KCPWindow)
 		if !conn.SetMtu(sessionMTU) {
@@ -527,14 +526,24 @@ func (s *Server) acceptSessions() error {
 	}
 }
 
+func optimalPackingMTU(limit int) int {
+	m := protocol.SafeKCPMTU(limit)
+	if m == 0 {
+		return protocol.MinUsableKCPMTU
+	}
+	// When downstream budget ~1200B gives worst-case m>=880B, a 525B KCP segment lets TWO
+	// full segments pack cleanly into each empty poll (~1100B capacity) while cutting RTO loss cost.
+	if m >= 880 {
+		return 525
+	}
+	return m
+}
+
 func (s *Server) computeSessionMTU(peerKey string) int {
 	val, ok := s.peerMetas.Load(peerKey)
 	if !ok {
 		limit := protocol.MaxResponsePayload(s.cfg.Domain, dnswire.RRTypeTXT, nil, s.cfg.MaxUDP)
-		if m := protocol.SafeKCPMTU(limit); m > 0 {
-			return m
-		}
-		return protocol.MinUsableKCPMTU
+		return optimalPackingMTU(limit)
 	}
 	pm := val.(*peerMeta)
 	pm.mu.RLock()
@@ -546,10 +555,7 @@ func (s *Server) computeSessionMTU(peerKey string) int {
 
 	effUDP := s.effectiveUDPLimit(mode, budget, ednsUDP)
 	limit := protocol.MaxResponsePayload(s.cfg.Domain, qtype, nil, effUDP)
-	if m := protocol.SafeKCPMTU(limit); m > 0 {
-		return m
-	}
-	return protocol.MinUsableKCPMTU
+	return optimalPackingMTU(limit)
 }
 
 func (s *Server) serveSession(conn *kcp.UDPSession) error {
