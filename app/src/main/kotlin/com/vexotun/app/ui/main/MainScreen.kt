@@ -3,6 +3,7 @@ package com.vexotun.app.ui.main
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -156,6 +157,18 @@ fun MainScreen(
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+
+    BackHandler(
+        enabled = drawerState.isOpen ||
+            (currentPage == AppPage.CONFIG && editingProfileId != null) ||
+            currentPage != AppPage.TUNNEL
+    ) {
+        when {
+            drawerState.isOpen -> scope.launch { drawerState.close() }
+            currentPage == AppPage.CONFIG && editingProfileId != null -> editingProfileId = null
+            currentPage != AppPage.TUNNEL -> currentPage = AppPage.TUNNEL
+        }
+    }
 
     var showConnectedBanner by remember { mutableStateOf(false) }
     var lastStatus by remember { mutableStateOf(runtime.status) }
@@ -944,23 +957,28 @@ private fun TunnelPage(
             }
         }
 
-        item(key = "traffic_stats") {
-            TrafficStatsSection(trafficStateFlow = trafficStateFlow)
-            Spacer(Modifier.height(12.dp))
-        }
-
-        item(key = "ping_button") {
-            OutlinedButton(
-                onClick = onPingClick,
-                enabled = !isPinging && active != null,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp),
-                shape = RoundedCornerShape(10.dp)
+        item(key = "ping_row") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(if (isPinging) "Mengukur Latency..." else "Cek Ping")
+                OutlinedButton(
+                    onClick = onPingClick,
+                    enabled = !isPinging && active != null,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isPinging) "Mengukur..." else "Cek Ping")
+                }
+                PingStatusChip(
+                    trafficStateFlow = trafficStateFlow,
+                    modifier = Modifier.height(46.dp)
+                )
             }
             Spacer(Modifier.height(12.dp))
         }
@@ -1088,68 +1106,39 @@ private fun TunnelPage(
 }
 
 @Composable
-private fun TrafficStatsSection(trafficStateFlow: StateFlow<TrafficStatsState>) {
+private fun PingStatusChip(
+    trafficStateFlow: StateFlow<TrafficStatsState>,
+    modifier: Modifier = Modifier
+) {
     val traffic by trafficStateFlow.collectAsState()
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            StatCard(
-                title = "Kecepatan ↑",
-                value = "${formatBytes(traffic.speedUpBps)}/s",
-                modifier = Modifier.weight(1f)
-            )
-            StatCard(
-                title = "Kecepatan ↓",
-                value = "${formatBytes(traffic.speedDownBps)}/s",
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            StatCard(
-                title = "Upload",
-                value = formatBytes(traffic.bytesUp),
-                modifier = Modifier.weight(1f)
-            )
-            StatCard(
-                title = "Download",
-                value = formatBytes(traffic.bytesDown),
-                modifier = Modifier.weight(1f)
-            )
-            StatCard(
-                title = "Ping",
-                value = traffic.pingMs?.let { "$it ms" } ?: "--",
-                modifier = Modifier.weight(0.85f)
-            )
-        }
+    val ping = traffic.pingMs
+    val accent = when {
+        ping == null -> MaterialTheme.colorScheme.onSurfaceVariant
+        ping < 120 -> Color(0xFF4DB6AC)
+        ping < 250 -> Color(0xFFF59E0B)
+        else -> MaterialTheme.colorScheme.error
     }
-}
-
-@Composable
-private fun StatCard(title: String, value: String, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.surfaceVariant
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Text(
-                title,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
+                "Ping",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(Modifier.height(3.dp))
             Text(
-                value,
+                text = ping?.let { "$it ms" } ?: "--",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = accent,
+                maxLines = 1
             )
         }
     }
