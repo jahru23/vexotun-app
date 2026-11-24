@@ -165,7 +165,10 @@ class VexotunVpnService : VpnService() {
                         sni = profile.ssh.sni.trim(),
                         payload = profile.ssh.payload,
                         wsPath = profile.ssh.wsPath.trim(),
-                        wsHost = profile.ssh.wsHost.trim()
+                        wsHost = profile.ssh.wsHost.trim(),
+                        dnsServer = profile.ssh.dnsServer.trim().ifBlank { "8.8.8.8" },
+                        nameserver = profile.ssh.nameserver.trim(),
+                        publicKey = profile.ssh.publicKey.trim()
                     ),
                     xrayConfigJson = xrayJson,
                     xrayPayload = xrayPayload

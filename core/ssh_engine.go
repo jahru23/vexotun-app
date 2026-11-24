@@ -30,13 +30,16 @@ type SSHConfig struct {
 	Username   string `json:"username"`
 	Password   string `json:"password"`
 	PrivateKey string `json:"privateKey"`
-	Transport  string `json:"transport"` // direct, http_proxy, ssl, ws, wss
+	Transport  string `json:"transport"` // direct, http_proxy, ssl, ws, wss, slowdns
 	ProxyHost  string `json:"proxyHost"`
 	ProxyPort  int    `json:"proxyPort"`
 	SNI        string `json:"sni"`
 	Payload    string `json:"payload"`
 	WSPath     string `json:"wsPath"`
 	WSHost     string `json:"wsHost"`
+	DNSServer  string `json:"dnsServer"`
+	Nameserver string `json:"nameserver"`
+	PublicKey  string `json:"publicKey"`
 }
 
 type sshEngine struct {
@@ -49,7 +52,8 @@ type sshEngine struct {
 }
 
 func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string, socksPort int, protector SocketProtector) (*sshEngine, error) {
-	if cfg.Host == "" || cfg.Port <= 0 {
+	isSlowDNS := strings.EqualFold(strings.TrimSpace(cfg.Transport), "slowdns")
+	if !isSlowDNS && (cfg.Host == "" || cfg.Port <= 0) {
 		return nil, fmt.Errorf("invalid SSH host or port")
 	}
 
@@ -82,6 +86,9 @@ func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string,
 	}
 
 	targetAddr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	if isSlowDNS && cfg.Host == "" {
+		targetAddr = net.JoinHostPort(cfg.Nameserver, "22")
+	}
 	logMsg("INFO", "Authenticating SSH user %q on %s...", cfg.Username, targetAddr)
 	c, chans, reqs, err := ssh.NewClientConn(conn, targetAddr, sshCfg)
 	if err != nil {
@@ -227,6 +234,9 @@ func dialSSHTransport(ctx context.Context, cfg SSHConfig, protector SocketProtec
 			return nil, fmt.Errorf("WS dial failed: %w", err)
 		}
 		return &wsNetConn{conn: wsConn}, nil
+
+	case "slowdns":
+		return dialSlowDNS(ctx, cfg, protector)
 
 	default:
 		return nil, fmt.Errorf("unsupported SSH transport: %s", transport)

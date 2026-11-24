@@ -72,12 +72,6 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     private val _pingResults = MutableStateFlow<Map<String, Int>>(emptyMap())
     val pingResults: StateFlow<Map<String, Int>> = _pingResults.asStateFlow()
 
-    private val _isCheckingIp = MutableStateFlow(false)
-    val isCheckingIp: StateFlow<Boolean> = _isCheckingIp.asStateFlow()
-
-    private val _publicIpInfo = MutableStateFlow<String?>(null)
-    val publicIpInfo: StateFlow<String?> = _publicIpInfo.asStateFlow()
-
     init {
         logDeviceAndNetworkInfo()
     }
@@ -283,39 +277,6 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             }
             _pingResults.value = results
             _isBatchPinging.value = false
-        }
-    }
-
-    fun checkPublicIp() {
-        if (_isCheckingIp.value) return
-        _isCheckingIp.value = true
-        viewModelScope.launch {
-            val info = withContext(Dispatchers.IO) {
-                runCatching {
-                    val conn = (URL("https://ipwho.is/").openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 5000
-                        readTimeout = 5000
-                        requestMethod = "GET"
-                    }
-                    conn.inputStream.bufferedReader().use { reader ->
-                        val body = reader.readText()
-                        val json = JSONObject(body)
-                        val ip = json.optString("ip", "")
-                        val cc = json.optString("country_code", "")
-                        val isp = json.optJSONObject("connection")?.optString("isp", "") ?: ""
-                        if (ip.isBlank()) error("IP kosong")
-                        listOf(ip, cc, isp).filter { it.isNotBlank() }.joinToString(" • ")
-                    }
-                }.getOrNull()
-            }
-            if (info != null) {
-                _publicIpInfo.value = info
-                TunnelState.appendLog("INFO", "IP Publik: $info")
-            } else {
-                _publicIpInfo.value = "Gagal cek IP"
-                TunnelState.appendLog("WARN", "Gagal mengecek IP publik")
-            }
-            _isCheckingIp.value = false
         }
     }
 

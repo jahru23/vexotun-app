@@ -190,8 +190,6 @@ fun MainScreen(
     val isPinging by viewModel.isPinging.collectAsState()
     val isBatchPinging by viewModel.isBatchPinging.collectAsState()
     val pingResults by viewModel.pingResults.collectAsState()
-    val isCheckingIp by viewModel.isCheckingIp.collectAsState()
-    val publicIpInfo by viewModel.publicIpInfo.collectAsState()
 
     val navStack = remember { mutableStateListOf(NavEntry(AppPage.TUNNEL)) }
     val currentNav = navStack.lastOrNull() ?: NavEntry(AppPage.TUNNEL)
@@ -459,15 +457,12 @@ fun MainScreen(
                         runtime = runtime,
                         trafficStateFlow = viewModel.trafficState,
                         isPinging = isPinging,
-                        isCheckingIp = isCheckingIp,
-                        publicIpInfo = publicIpInfo,
                         onSelectProfile = viewModel::selectProfile,
                         onGoToConfig = { navigateTo(AppPage.CONFIG, null) },
                         onOpenImport = { showImportDialog = true },
                         onStartClick = onRequestVpnStart,
                         onStopClick = viewModel::stopVpn,
                         onPingClick = viewModel::runPingCheck,
-                        onCheckIpClick = viewModel::checkPublicIp,
                         onClearLogs = viewModel::clearLogs
                     )
                     AppPage.CONFIG -> {
@@ -1105,15 +1100,12 @@ private fun TunnelPage(
     runtime: VpnRuntimeState,
     trafficStateFlow: StateFlow<TrafficStatsState>,
     isPinging: Boolean,
-    isCheckingIp: Boolean,
-    publicIpInfo: String?,
     onSelectProfile: (String) -> Unit,
     onGoToConfig: () -> Unit,
     onOpenImport: () -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
     onPingClick: () -> Unit,
-    onCheckIpClick: () -> Unit,
     onClearLogs: () -> Unit
 ) {
     val active = config.activeProfile()
@@ -1390,7 +1382,7 @@ private fun TunnelPage(
         item(key = "ping_row") {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedButton(
@@ -1399,55 +1391,16 @@ private fun TunnelPage(
                     modifier = Modifier
                         .weight(1f)
                         .height(46.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp)
+                    shape = RoundedCornerShape(10.dp)
                 ) {
-                    Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (isPinging) "Mengukur..." else "Cek Ping", maxLines = 1, fontSize = 13.sp)
+                    Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isPinging) "Mengukur..." else "Cek Ping")
                 }
                 PingStatusChip(
                     trafficStateFlow = trafficStateFlow,
                     modifier = Modifier.height(46.dp)
                 )
-                OutlinedButton(
-                    onClick = onCheckIpClick,
-                    enabled = !isCheckingIp,
-                    modifier = Modifier.height(46.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp)
-                ) {
-                    Icon(Icons.Default.Public, contentDescription = null, modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(if (isCheckingIp) "..." else "Cek IP", maxLines = 1, fontSize = 13.sp)
-                }
-            }
-            if (!publicIpInfo.isNullOrBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Public,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = publicIpInfo,
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
             }
             Spacer(Modifier.height(12.dp))
         }
@@ -2192,7 +2145,9 @@ private fun SshProfileEditor(
                             host = parsed.host.ifBlank { p.ssh.host },
                             port = if (parsed.port > 0) parsed.port else p.ssh.port,
                             username = parsed.username.ifBlank { p.ssh.username },
-                            password = parsed.password.ifBlank { p.ssh.password }
+                            password = parsed.password.ifBlank { p.ssh.password },
+                            nameserver = parsed.nameserver.ifBlank { p.ssh.nameserver },
+                            publicKey = parsed.publicKey.ifBlank { p.ssh.publicKey }
                         )
                     )
                 }
@@ -2217,24 +2172,50 @@ private fun SshProfileEditor(
         onSelect = { t -> onUpdateProfile { it.copy(ssh = it.ssh.copy(transport = t)) } }
     )
 
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    if (s.transport != SshTransport.SLOWDNS) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = s.host,
+                onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(host = v)) } },
+                label = { Text("Host / IP") },
+                singleLine = true,
+                modifier = Modifier.weight(2f)
+            )
+            OutlinedTextField(
+                value = s.port.toString(),
+                onValueChange = { v ->
+                    val p = v.filter(Char::isDigit).toIntOrNull() ?: 22
+                    onUpdateProfile { it.copy(ssh = it.ssh.copy(port = p)) }
+                },
+                label = { Text("Port") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    } else {
         OutlinedTextField(
-            value = s.host,
-            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(host = v)) } },
-            label = { Text("Host / IP") },
-            singleLine = true,
-            modifier = Modifier.weight(2f)
+            value = s.nameserver,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(nameserver = v.replace("\n", ""))) } },
+            label = { Text("Nameserver (NS)") },
+            singleLine = false,
+            maxLines = 3,
+            modifier = Modifier.fillMaxWidth()
         )
         OutlinedTextField(
-            value = s.port.toString(),
-            onValueChange = { v ->
-                val p = v.filter(Char::isDigit).toIntOrNull() ?: 22
-                onUpdateProfile { it.copy(ssh = it.ssh.copy(port = p)) }
-            },
-            label = { Text("Port") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            value = s.publicKey,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(publicKey = v.replace("\n", ""))) } },
+            label = { Text("Public Key") },
+            singleLine = false,
+            maxLines = 3,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = s.dnsServer,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsServer = v.replace("\n", ""))) } },
+            label = { Text("DNS Resolver (mis. 8.8.8.8)") },
             singleLine = true,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.fillMaxWidth()
         )
     }
 
@@ -2286,7 +2267,7 @@ private fun SshProfileEditor(
         )
     }
 
-    if (s.transport != SshTransport.DIRECT) {
+    if (s.transport != SshTransport.DIRECT && s.transport != SshTransport.SLOWDNS) {
         Card(
             onClick = { showAdvanced = !showAdvanced },
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
@@ -2791,6 +2772,8 @@ private fun parseSshAccountPaste(raw: String): SshProfile? {
     var port = 0
     var user = ""
     var pass = ""
+    var ns = ""
+    var pubkey = ""
     text.lines().forEach { line ->
         val idx = line.indexOf(':')
         if (idx > 0) {
@@ -2801,11 +2784,20 @@ private fun parseSshAccountPaste(raw: String): SshProfile? {
                 key == "port" -> if (port == 0) port = value.filter(Char::isDigit).toIntOrNull() ?: 0
                 key in listOf("user", "username") -> if (user.isBlank()) user = value
                 key in listOf("pass", "password", "sandi") -> if (pass.isBlank()) pass = value
+                key in listOf("ns", "nameserver", "slowdns ns") -> if (ns.isBlank()) ns = value
+                key in listOf("pubkey", "public key", "publickey", "key") -> if (pubkey.isBlank()) pubkey = value
             }
         }
     }
-    return if (host.isNotBlank() || user.isNotBlank()) {
-        SshProfile(host = host, port = if (port > 0) port else 443, username = user, password = pass)
+    return if (host.isNotBlank() || user.isNotBlank() || ns.isNotBlank()) {
+        SshProfile(
+            host = host,
+            port = if (port > 0) port else 443,
+            username = user,
+            password = pass,
+            nameserver = ns,
+            publicKey = pubkey
+        )
     } else {
         null
     }

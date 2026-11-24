@@ -15,7 +15,8 @@ enum class SshTransport(val wireValue: String, val label: String) {
     HTTP_PROXY("http_proxy", "HTTP Proxy"),
     SSL("ssl", "SSL / TLS"),
     WS("ws", "WebSocket"),
-    WSS("wss", "WebSocket TLS")
+    WSS("wss", "WebSocket TLS"),
+    SLOWDNS("slowdns", "SlowDNS")
 }
 
 @Serializable
@@ -54,7 +55,10 @@ data class SshProfile(
     val sni: String = "",
     val payload: String = "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]",
     val wsPath: String = "/",
-    val wsHost: String = ""
+    val wsHost: String = "",
+    val dnsServer: String = "8.8.8.8",
+    val nameserver: String = "",
+    val publicKey: String = ""
 )
 
 @Serializable
@@ -107,11 +111,10 @@ data class TunnelProfile(
 
     fun summary(): String = when (mode) {
         TunnelMode.SSH -> {
-            val hostPart = if (lockInfo?.hideHost == true) {
-                "Server Terkunci"
-            } else {
-                val h = ssh.host.ifBlank { "Host belum diisi" }
-                "$h:${ssh.port}"
+            val hostPart = when {
+                lockInfo?.hideHost == true -> "Server Terkunci"
+                ssh.transport == SshTransport.SLOWDNS -> ssh.nameserver.ifBlank { "NS belum diisi" }
+                else -> "${ssh.host.ifBlank { "Host belum diisi" }}:${ssh.port}"
             }
             "${ssh.transport.label} • $hostPart"
         }
@@ -161,7 +164,10 @@ data class CoreSshPayload(
     val sni: String,
     val payload: String,
     val wsPath: String,
-    val wsHost: String
+    val wsHost: String,
+    val dnsServer: String = "8.8.8.8",
+    val nameserver: String = "",
+    val publicKey: String = ""
 )
 
 @Serializable
