@@ -6,9 +6,10 @@ import android.content.pm.PackageManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.vexotun.app.data.ConfigStore
+import com.vexotun.app.model.LinkParser
 import com.vexotun.app.model.SplitTunnelMode
-import com.vexotun.app.model.SshTransport
 import com.vexotun.app.model.TunnelMode
+import com.vexotun.app.model.TunnelProfile
 import com.vexotun.app.model.VexotunConfig
 import com.vexotun.app.vpn.TunnelState
 import com.vexotun.app.vpn.VexotunVpnService
@@ -54,10 +55,47 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun setMode(mode: TunnelMode) = updateConfig { it.copy(mode = mode) }
+    fun selectProfile(profileId: String) = updateConfig {
+        it.copy(activeProfileId = profileId)
+    }
 
-    fun setSshTransport(transport: SshTransport) = updateConfig {
-        it.copy(ssh = it.ssh.copy(transport = transport))
+    fun updateActiveProfile(transform: (TunnelProfile) -> TunnelProfile) = updateConfig { cfg ->
+        val activeId = cfg.activeProfile().id
+        val updatedList = cfg.profiles.map { p ->
+            if (p.id == activeId) transform(p) else p
+        }
+        cfg.copy(profiles = updatedList)
+    }
+
+    fun addBlankProfile(mode: TunnelMode) = updateConfig { cfg ->
+        val newProfile = TunnelProfile(
+            name = if (mode == TunnelMode.XRAY) "Xray Baru" else "SSH Baru",
+            mode = mode
+        )
+        cfg.copy(
+            profiles = cfg.profiles + newProfile,
+            activeProfileId = newProfile.id
+        )
+    }
+
+    fun importFromLink(rawInput: String): Result<TunnelProfile> {
+        val result = LinkParser.parseShareLink(rawInput)
+        result.onSuccess { imported ->
+            updateConfig { cfg ->
+                cfg.copy(
+                    profiles = cfg.profiles + imported,
+                    activeProfileId = imported.id
+                )
+            }
+        }
+        return result
+    }
+
+    fun deleteProfile(profileId: String) = updateConfig { cfg ->
+        if (cfg.profiles.size <= 1) return@updateConfig cfg
+        val remaining = cfg.profiles.filterNot { it.id == profileId }
+        val nextActive = if (cfg.activeProfileId == profileId) remaining.first().id else cfg.activeProfileId
+        cfg.copy(profiles = remaining, activeProfileId = nextActive)
     }
 
     fun setSplitMode(mode: SplitTunnelMode) = updateConfig {
@@ -90,17 +128,28 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         _isPinging.value = true
         viewModelScope.launch {
             val ms = withContext(Dispatchers.IO) {
-                val cfg = _config.value
-                if (cfg.mode == TunnelMode.SSH && cfg.ssh.host.isNotBlank()) {
-                    Core.pingTCP(cfg.ssh.host.trim(), cfg.ssh.port, 3000)
-                } else {
-                    Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
+                val active = _config.value.activeProfile()
+                when (active.mode) {
+                    TunnelMode.SSH -> {
+                        if (active.ssh.host.isNotBlank()) {
+                            Core.pingTCP(active.ssh.host.trim(), active.ssh.port, 3000)
+                        } else {
+                            Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
+                        }
+                    }
+                    TunnelMode.XRAY -> {
+                        if (active.xray.address.isNotBlank()) {
+                            Core.pingTCP(active.xray.address.trim(), active.xray.port, 3000)
+                        } else {
+                            Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
+                        }
+                    }
                 }
             }
             TunnelState.setPing(if (ms >= 0) ms else null)
             TunnelState.appendLog(
                 if (ms >= 0) "INFO" else "WARN",
-                if (ms >= 0) "Ping check: ${ms}ms" else "Ping check failed / timeout"
+                if (ms >= 0) "Ping: ${ms} ms" else "Ping gagal / timeout"
             )
             _isPinging.value = false
         }

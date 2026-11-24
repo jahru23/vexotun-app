@@ -1,20 +1,37 @@
 package com.vexotun.app.model
 
 import kotlinx.serialization.Serializable
+import java.util.UUID
 
 @Serializable
-enum class TunnelMode {
-    SSH,
-    XRAY
+enum class TunnelMode(val label: String) {
+    SSH("SSH"),
+    XRAY("Xray")
 }
 
 @Serializable
 enum class SshTransport(val wireValue: String, val label: String) {
-    DIRECT("direct", "Direct SSH"),
-    HTTP_PROXY("http_proxy", "HTTP Proxy + Payload"),
-    SSL("ssl", "SSL / TLS (SNI)"),
-    WS("ws", "WebSocket (WS)"),
-    WSS("wss", "WebSocket TLS (WSS)")
+    DIRECT("direct", "Direct"),
+    HTTP_PROXY("http_proxy", "HTTP Proxy"),
+    SSL("ssl", "SSL / TLS"),
+    WS("ws", "WebSocket"),
+    WSS("wss", "WebSocket TLS")
+}
+
+@Serializable
+enum class XrayProtocol(val wireValue: String, val label: String) {
+    VMESS("vmess", "VMess"),
+    VLESS("vless", "VLESS"),
+    TROJAN("trojan", "Trojan"),
+    SHADOWSOCKS("shadowsocks", "Shadowsocks")
+}
+
+@Serializable
+enum class XrayTransport(val wireValue: String, val label: String) {
+    WS("ws", "WebSocket"),
+    GRPC("grpc", "gRPC"),
+    HTTPUPGRADE("httpupgrade", "HTTPUpgrade"),
+    TCP("tcp", "TCP")
 }
 
 @Serializable
@@ -41,16 +58,59 @@ data class SshProfile(
 )
 
 @Serializable
+data class XrayProfile(
+    val protocol: XrayProtocol = XrayProtocol.VMESS,
+    val address: String = "",
+    val port: Int = 443,
+    val id: String = "",
+    val alterId: Int = 0,
+    val security: String = "auto",
+    val flow: String = "",
+    val network: XrayTransport = XrayTransport.WS,
+    val tls: Boolean = true,
+    val sni: String = "",
+    val host: String = "",
+    val path: String = "",
+    val allowInsecure: Boolean = false
+)
+
+@Serializable
+data class TunnelProfile(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String = "Profil Baru",
+    val mode: TunnelMode = TunnelMode.XRAY,
+    val ssh: SshProfile = SshProfile(),
+    val xray: XrayProfile = XrayProfile()
+) {
+    fun summary(): String = when (mode) {
+        TunnelMode.SSH -> {
+            val h = ssh.host.ifBlank { "Host belum diisi" }
+            "${ssh.transport.label} • $h:${ssh.port}"
+        }
+        TunnelMode.XRAY -> {
+            val h = xray.address.ifBlank { "Host belum diisi" }
+            val tlsTag = if (xray.tls) "TLS" else "Non-TLS"
+            "${xray.protocol.label} • ${xray.network.label} $tlsTag • $h:${xray.port}"
+        }
+    }
+}
+
+@Serializable
 data class VexotunConfig(
-    val mode: TunnelMode = TunnelMode.SSH,
+    val profiles: List<TunnelProfile> = listOf(
+        TunnelProfile(id = "default-xray", name = "Xray Default", mode = TunnelMode.XRAY),
+        TunnelProfile(id = "default-ssh", name = "SSH Default", mode = TunnelMode.SSH)
+    ),
+    val activeProfileId: String = "default-xray",
     val mtu: Int = 1500,
     val socksPort: Int = 10808,
     val dnsServer: String = "8.8.8.8",
-    val ssh: SshProfile = SshProfile(),
-    val xrayConfigJson: String = DEFAULT_XRAY_TEMPLATE,
     val splitMode: SplitTunnelMode = SplitTunnelMode.ALL_APPS,
     val splitPackages: List<String> = emptyList()
-)
+) {
+    fun activeProfile(): TunnelProfile =
+        profiles.firstOrNull { it.id == activeProfileId } ?: profiles.first()
+}
 
 @Serializable
 data class CoreSshPayload(
@@ -83,39 +143,3 @@ data class CoreStats(
     val bytesUp: Long = 0L,
     val bytesDown: Long = 0L
 )
-
-const val DEFAULT_XRAY_TEMPLATE = """{
-  "log": {
-    "loglevel": "warning"
-  },
-  "outbounds": [
-    {
-      "protocol": "vless",
-      "settings": {
-        "vnext": [
-          {
-            "address": "example.com",
-            "port": 443,
-            "users": [
-              {
-                "id": "00000000-0000-0000-0000-000000000000",
-                "encryption": "none"
-              }
-            ]
-          }
-        ]
-      },
-      "streamSettings": {
-        "network": "ws",
-        "security": "tls",
-        "tlsSettings": {
-          "serverName": "example.com",
-          "allowInsecure": false
-        },
-        "wsSettings": {
-          "path": "/vless"
-        }
-      }
-    }
-  ]
-}"""

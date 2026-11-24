@@ -3,6 +3,8 @@ package com.vexotun.app.ui.main
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -26,14 +28,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.NetworkPing
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -53,7 +61,9 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -73,14 +83,17 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.vexotun.app.model.DEFAULT_XRAY_TEMPLATE
 import com.vexotun.app.model.SplitTunnelMode
 import com.vexotun.app.model.SshTransport
 import com.vexotun.app.model.TunnelMode
+import com.vexotun.app.model.TunnelProfile
 import com.vexotun.app.model.VexotunConfig
+import com.vexotun.app.model.XrayProtocol
+import com.vexotun.app.model.XrayTransport
 import com.vexotun.app.vpn.ConnectionStatus
 import com.vexotun.app.vpn.VpnRuntimeState
 import java.util.Locale
@@ -97,6 +110,20 @@ fun MainScreen(
     val isPinging by viewModel.isPinging.collectAsState()
 
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var showImportDialog by remember { mutableStateOf(false) }
+
+    if (showImportDialog) {
+        ImportLinkDialog(
+            onDismiss = { showImportDialog = false },
+            onImport = { linkText ->
+                val result = viewModel.importFromLink(linkText)
+                if (result.isSuccess) {
+                    showImportDialog = false
+                }
+                result
+            }
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -104,8 +131,13 @@ fun MainScreen(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Vexotun", fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(10.dp))
                         StatusBadge(runtime.status)
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showImportDialog = true }) {
+                        Icon(Icons.Default.Link, contentDescription = "Import Link")
                     }
                 }
             )
@@ -115,7 +147,7 @@ fun MainScreen(
                 NavigationBarItem(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
+                    icon = { Icon(Icons.Default.Home, contentDescription = "Tunnel") },
                     label = { Text("Tunnel") }
                 )
                 NavigationBarItem(
@@ -127,14 +159,14 @@ fun MainScreen(
                 NavigationBarItem(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Default.Terminal, contentDescription = "Logs") },
-                    label = { Text("Logs") }
+                    icon = { Icon(Icons.Default.Terminal, contentDescription = "Log") },
+                    label = { Text("Log") }
                 )
                 NavigationBarItem(
                     selected = selectedTab == 3,
                     onClick = { selectedTab = 3 },
-                    icon = { Icon(Icons.Default.Apps, contentDescription = "Split Tunnel") },
-                    label = { Text("Apps") }
+                    icon = { Icon(Icons.Default.Apps, contentDescription = "Aplikasi") },
+                    label = { Text("Aplikasi") }
                 )
             }
         }
@@ -149,15 +181,20 @@ fun MainScreen(
                     config = config,
                     runtime = runtime,
                     isPinging = isPinging,
-                    onModeChange = viewModel::setMode,
+                    onSelectProfile = viewModel::selectProfile,
+                    onOpenImport = { showImportDialog = true },
                     onStartClick = onRequestVpnStart,
                     onStopClick = viewModel::stopVpn,
                     onPingClick = viewModel::runPingCheck
                 )
                 1 -> ConfigTab(
                     config = config,
-                    onUpdate = viewModel::updateConfig,
-                    onTransportChange = viewModel::setSshTransport
+                    onSelectProfile = viewModel::selectProfile,
+                    onAddProfile = viewModel::addBlankProfile,
+                    onDeleteProfile = viewModel::deleteProfile,
+                    onOpenImport = { showImportDialog = true },
+                    onUpdateProfile = viewModel::updateActiveProfile,
+                    onUpdateConfig = viewModel::updateConfig
                 )
                 2 -> LogsTab(
                     runtime = runtime,
@@ -175,12 +212,82 @@ fun MainScreen(
 }
 
 @Composable
+private fun ImportLinkDialog(
+    onDismiss: () -> Unit,
+    onImport: (String) -> Result<TunnelProfile>
+) {
+    val context = LocalContext.current
+    var input by remember { mutableStateOf("") }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Import Link Konfigurasi") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Tempel 1 link vmess://, vless://, trojan://, atau ss://",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = {
+                        input = it
+                        errorMsg = null
+                    },
+                    placeholder = { Text("vmess://...") },
+                    minLines = 3,
+                    maxLines = 5,
+                    isError = errorMsg != null,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (errorMsg != null) {
+                    Text(
+                        errorMsg.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                TextButton(
+                    onClick = {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+                        if (clip.isNotBlank()) {
+                            input = clip
+                            errorMsg = null
+                        }
+                    }
+                ) {
+                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Tempel dari Clipboard")
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val res = onImport(input)
+                res.onFailure { errorMsg = it.message ?: "Link tidak valid" }
+            }) {
+                Text("Import")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Batal")
+            }
+        }
+    )
+}
+
+@Composable
 private fun StatusBadge(status: ConnectionStatus) {
     val (bg, label) = when (status) {
-        ConnectionStatus.CONNECTED -> Color(0xFF1B5E20) to "CONNECTED"
-        ConnectionStatus.CONNECTING -> Color(0xFFE65100) to "CONNECTING"
-        ConnectionStatus.ERROR -> Color(0xFFB71C1C) to "ERROR"
-        ConnectionStatus.DISCONNECTED -> Color(0xFF455A64) to "IDLE"
+        ConnectionStatus.CONNECTED -> Color(0xFF1B5E20) to "TERHUBUNG"
+        ConnectionStatus.CONNECTING -> Color(0xFFE65100) to "MENGHUBUNGKAN"
+        ConnectionStatus.ERROR -> Color(0xFFB71C1C) to "GAGAL"
+        ConnectionStatus.DISCONNECTED -> Color(0xFF455A64) to "SIAP"
     }
     Box(
         modifier = Modifier
@@ -197,11 +304,13 @@ private fun HomeTab(
     config: VexotunConfig,
     runtime: VpnRuntimeState,
     isPinging: Boolean,
-    onModeChange: (TunnelMode) -> Unit,
+    onSelectProfile: (String) -> Unit,
+    onOpenImport: () -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
     onPingClick: () -> Unit
 ) {
+    val active = config.activeProfile()
     val isActive = runtime.status == ConnectionStatus.CONNECTED || runtime.status == ConnectionStatus.CONNECTING
 
     Column(
@@ -211,17 +320,29 @@ private fun HomeTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Mode switcher
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            TunnelMode.entries.forEachIndexed { index, mode ->
-                SegmentedButton(
-                    selected = config.mode == mode,
-                    onClick = { if (!isActive) onModeChange(mode) },
-                    enabled = !isActive,
-                    shape = SegmentedButtonDefaults.itemShape(index, TunnelMode.entries.size)
-                ) {
-                    Text(if (mode == TunnelMode.SSH) "SSH + Injector" else "Xray Core")
-                }
+        // Profile quick selector
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            config.profiles.forEach { profile ->
+                val selected = profile.id == active.id
+                FilterChip(
+                    selected = selected,
+                    onClick = { if (!isActive) onSelectProfile(profile.id) },
+                    label = { Text("${profile.name} (${profile.mode.label})") }
+                )
+            }
+            OutlinedButton(
+                onClick = onOpenImport,
+                enabled = !isActive
+            ) {
+                Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Import")
             }
         }
 
@@ -233,13 +354,13 @@ private fun HomeTab(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp),
+                    .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(
                     onClick = { if (isActive) onStopClick() else onStartClick() },
-                    modifier = Modifier.size(120.dp),
+                    modifier = Modifier.size(124.dp),
                     shape = CircleShape,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (isActive) Color(0xFFC62828) else MaterialTheme.colorScheme.primary
@@ -248,24 +369,17 @@ private fun HomeTab(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.Default.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(36.dp))
                         Spacer(Modifier.height(4.dp))
-                        Text(if (isActive) "STOP" else "START", fontWeight = FontWeight.Bold)
+                        Text(if (isActive) "PUTUSKAN" else "HUBUNGKAN", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
                 }
 
                 Text(
-                    text = runtime.statusMessage,
+                    text = active.name,
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.Bold
                 )
-
-                val summary = if (config.mode == TunnelMode.SSH) {
-                    val host = config.ssh.host.ifBlank { "(host belum diisi)" }
-                    "${config.ssh.transport.label} • $host:${config.ssh.port}"
-                } else {
-                    "Xray JSON • SOCKS 127.0.0.1:${config.socksPort}"
-                }
                 Text(
-                    text = summary,
+                    text = active.summary(),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -277,21 +391,9 @@ private fun HomeTab(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            StatCard(
-                title = "Upload",
-                value = formatBytes(runtime.bytesUp),
-                modifier = Modifier.weight(1f)
-            )
-            StatCard(
-                title = "Download",
-                value = formatBytes(runtime.bytesDown),
-                modifier = Modifier.weight(1f)
-            )
-            StatCard(
-                title = "Ping",
-                value = runtime.pingMs?.let { "${it} ms" } ?: "--",
-                modifier = Modifier.weight(1f)
-            )
+            StatCard("Upload", formatBytes(runtime.bytesUp), Modifier.weight(1f))
+            StatCard("Download", formatBytes(runtime.bytesDown), Modifier.weight(1f))
+            StatCard("Ping", runtime.pingMs?.let { "$it ms" } ?: "--", Modifier.weight(1f))
         }
 
         OutlinedButton(
@@ -301,7 +403,7 @@ private fun HomeTab(
         ) {
             Icon(Icons.Default.NetworkPing, contentDescription = null)
             Spacer(Modifier.width(8.dp))
-            Text(if (isPinging) "Checking Latency..." else "Test Ping / Latency")
+            Text(if (isPinging) "Mengukur Latency..." else "Cek Ping")
         }
     }
 }
@@ -320,9 +422,16 @@ private fun StatCard(title: String, value: String, modifier: Modifier = Modifier
 @Composable
 private fun ConfigTab(
     config: VexotunConfig,
-    onUpdate: ((VexotunConfig) -> VexotunConfig) -> Unit,
-    onTransportChange: (SshTransport) -> Unit
+    onSelectProfile: (String) -> Unit,
+    onAddProfile: (TunnelMode) -> Unit,
+    onDeleteProfile: (String) -> Unit,
+    onOpenImport: () -> Unit,
+    onUpdateProfile: ((TunnelProfile) -> TunnelProfile) -> Unit,
+    onUpdateConfig: ((VexotunConfig) -> VexotunConfig) -> Unit
 ) {
+    val active = config.activeProfile()
+    var showNetworkSettings by rememberSaveable { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -330,185 +439,471 @@ private fun ConfigTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        if (config.mode == TunnelMode.SSH) {
-            Text("SSH Transport", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        // Profile Actions
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = onOpenImport,
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Import Link")
+            }
+            OutlinedButton(
+                onClick = { onAddProfile(TunnelMode.XRAY) },
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Xray")
+            }
+            OutlinedButton(
+                onClick = { onAddProfile(TunnelMode.SSH) },
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("SSH")
+            }
+        }
+
+        // Saved Profiles Horizontal Strip
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            config.profiles.forEach { profile ->
+                val isSelected = profile.id == active.id
+                Card(
+                    onClick = { onSelectProfile(profile.id) },
+                    border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isSelected) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        }
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                profile.name,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                profile.mode.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (config.profiles.size > 1) {
+                            Spacer(Modifier.width(6.dp))
+                            IconButton(
+                                onClick = { onDeleteProfile(profile.id) },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.DeleteOutline,
+                                    contentDescription = "Hapus Profil",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Profile Name & Mode
+        OutlinedTextField(
+            value = active.name,
+            onValueChange = { v -> onUpdateProfile { it.copy(name = v) } },
+            label = { Text("Nama Profil") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            TunnelMode.entries.forEachIndexed { index, mode ->
+                SegmentedButton(
+                    selected = active.mode == mode,
+                    onClick = { onUpdateProfile { it.copy(mode = mode) } },
+                    shape = SegmentedButtonDefaults.itemShape(index, TunnelMode.entries.size)
+                ) {
+                    Text(mode.label)
+                }
+            }
+        }
+
+        if (active.mode == TunnelMode.XRAY) {
+            XrayProfileEditor(profile = active, onUpdateProfile = onUpdateProfile)
+        } else {
+            SshProfileEditor(profile = active, onUpdateProfile = onUpdateProfile)
+        }
+
+        // Collapsible Network Settings
+        Card(
+            onClick = { showNetworkSettings = !showNetworkSettings },
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                SshTransport.entries.forEach { t ->
-                    FilterChip(
-                        selected = config.ssh.transport == t,
-                        onClick = { onTransportChange(t) },
-                        label = { Text(t.label) }
-                    )
-                }
+                Text("Pengaturan Jaringan (DNS & MTU)", fontWeight = FontWeight.Medium)
+                Icon(
+                    if (showNetworkSettings) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = null
+                )
             }
+        }
 
+        AnimatedVisibility(visible = showNetworkSettings) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
-                    value = config.ssh.host,
-                    onValueChange = { v -> onUpdate { it.copy(ssh = it.ssh.copy(host = v)) } },
-                    label = { Text("SSH Host / IP") },
+                    value = config.dnsServer,
+                    onValueChange = { v -> onUpdateConfig { it.copy(dnsServer = v) } },
+                    label = { Text("DNS") },
                     singleLine = true,
-                    modifier = Modifier.weight(2f)
+                    modifier = Modifier.weight(1.5f)
                 )
                 OutlinedTextField(
-                    value = config.ssh.port.toString(),
+                    value = config.mtu.toString(),
                     onValueChange = { v ->
-                        val p = v.filter(Char::isDigit).toIntOrNull() ?: 22
-                        onUpdate { it.copy(ssh = it.ssh.copy(port = p)) }
+                        val m = v.filter(Char::isDigit).toIntOrNull() ?: 1500
+                        onUpdateConfig { it.copy(mtu = m) }
                     },
-                    label = { Text("Port") },
+                    label = { Text("MTU") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
                     modifier = Modifier.weight(1f)
                 )
             }
+        }
+    }
+}
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = config.ssh.username,
-                    onValueChange = { v -> onUpdate { it.copy(ssh = it.ssh.copy(username = v)) } },
-                    label = { Text("Username") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
-                OutlinedTextField(
-                    value = config.ssh.password,
-                    onValueChange = { v -> onUpdate { it.copy(ssh = it.ssh.copy(password = v)) } },
-                    label = { Text("Password") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
+@Composable
+private fun XrayProfileEditor(
+    profile: TunnelProfile,
+    onUpdateProfile: ((TunnelProfile) -> TunnelProfile) -> Unit
+) {
+    val x = profile.xray
+
+    Text("Protokol", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        XrayProtocol.entries.forEach { proto ->
+            FilterChip(
+                selected = x.protocol == proto,
+                onClick = { onUpdateProfile { it.copy(xray = it.xray.copy(protocol = proto)) } },
+                label = { Text(proto.label) }
+            )
+        }
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = x.address,
+            onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(address = v)) } },
+            label = { Text("Address / Host") },
+            singleLine = true,
+            modifier = Modifier.weight(2f)
+        )
+        OutlinedTextField(
+            value = x.port.toString(),
+            onValueChange = { v ->
+                val p = v.filter(Char::isDigit).toIntOrNull() ?: 443
+                onUpdateProfile { it.copy(xray = it.xray.copy(port = p)) }
+            },
+            label = { Text("Port") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            modifier = Modifier.weight(1f)
+        )
+    }
+
+    OutlinedTextField(
+        value = x.id,
+        onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(id = v)) } },
+        label = {
+            Text(
+                when (x.protocol) {
+                    XrayProtocol.VMESS, XrayProtocol.VLESS -> "UUID"
+                    else -> "Password"
+                }
+            )
+        },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+
+    if (x.protocol == XrayProtocol.SHADOWSOCKS) {
+        OutlinedTextField(
+            value = x.security,
+            onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(security = v)) } },
+            label = { Text("Method / Cipher") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+
+    Text("Transport", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        XrayTransport.entries.forEach { net ->
+            FilterChip(
+                selected = x.network == net,
+                onClick = { onUpdateProfile { it.copy(xray = it.xray.copy(network = net)) } },
+                label = { Text(net.label) }
+            )
+        }
+    }
+
+    if (x.network != XrayTransport.TCP) {
+        OutlinedTextField(
+            value = x.path,
+            onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(path = v)) } },
+            label = {
+                Text(if (x.network == XrayTransport.GRPC) "Service Name" else "Path")
+            },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = x.host,
+            onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(host = v)) } },
+            label = { Text("Host Header") },
+            singleLine = true,
+            modifier = Modifier.weight(1f)
+        )
+        OutlinedTextField(
+            value = x.sni,
+            onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(sni = v)) } },
+            label = { Text("SNI") },
+            singleLine = true,
+            modifier = Modifier.weight(1f)
+        )
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("Gunakan TLS")
+        Switch(
+            checked = x.tls,
+            onCheckedChange = { checked ->
+                onUpdateProfile { it.copy(xray = it.xray.copy(tls = checked)) }
+            }
+        )
+    }
+
+    if (x.tls) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Allow Insecure (lewati verifikasi sertifikat)")
+            Switch(
+                checked = x.allowInsecure,
+                onCheckedChange = { checked ->
+                    onUpdateProfile { it.copy(xray = it.xray.copy(allowInsecure = checked)) }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SshProfileEditor(
+    profile: TunnelProfile,
+    onUpdateProfile: ((TunnelProfile) -> TunnelProfile) -> Unit
+) {
+    val s = profile.ssh
+    var showAdvanced by rememberSaveable { mutableStateOf(false) }
+
+    Text("Transport", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        SshTransport.entries.forEach { t ->
+            FilterChip(
+                selected = s.transport == t,
+                onClick = { onUpdateProfile { it.copy(ssh = it.ssh.copy(transport = t)) } },
+                label = { Text(t.label) }
+            )
+        }
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = s.host,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(host = v)) } },
+            label = { Text("Host / IP") },
+            singleLine = true,
+            modifier = Modifier.weight(2f)
+        )
+        OutlinedTextField(
+            value = s.port.toString(),
+            onValueChange = { v ->
+                val p = v.filter(Char::isDigit).toIntOrNull() ?: 22
+                onUpdateProfile { it.copy(ssh = it.ssh.copy(port = p)) }
+            },
+            label = { Text("Port") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            modifier = Modifier.weight(1f)
+        )
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = s.username,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(username = v)) } },
+            label = { Text("Username") },
+            singleLine = true,
+            modifier = Modifier.weight(1f)
+        )
+        OutlinedTextField(
+            value = s.password,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(password = v)) } },
+            label = { Text("Password") },
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true,
+            modifier = Modifier.weight(1f)
+        )
+    }
+
+    if (s.transport == SshTransport.SSL || s.transport == SshTransport.WSS) {
+        OutlinedTextField(
+            value = s.sni,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(sni = v)) } },
+            label = { Text("SNI") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+
+    if (s.transport == SshTransport.WS || s.transport == SshTransport.WSS) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = s.wsPath,
+                onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(wsPath = v)) } },
+                label = { Text("WS Path") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                value = s.wsHost,
+                onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(wsHost = v)) } },
+                label = { Text("WS Host") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+
+    if (s.transport != SshTransport.DIRECT) {
+        Card(
+            onClick = { showAdvanced = !showAdvanced },
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Proxy & Custom Payload", fontWeight = FontWeight.Medium)
+                Icon(
+                    if (showAdvanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = null
                 )
             }
+        }
 
-            if (config.ssh.transport != SshTransport.DIRECT) {
+        AnimatedVisibility(visible = showAdvanced) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
-                        value = config.ssh.proxyHost,
-                        onValueChange = { v -> onUpdate { it.copy(ssh = it.ssh.copy(proxyHost = v)) } },
-                        label = { Text("Remote Proxy (opsional)") },
+                        value = s.proxyHost,
+                        onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(proxyHost = v)) } },
+                        label = { Text("Proxy Host (opsional)") },
                         singleLine = true,
                         modifier = Modifier.weight(2f)
                     )
                     OutlinedTextField(
-                        value = config.ssh.proxyPort.toString(),
+                        value = s.proxyPort.toString(),
                         onValueChange = { v ->
                             val p = v.filter(Char::isDigit).toIntOrNull() ?: 8080
-                            onUpdate { it.copy(ssh = it.ssh.copy(proxyPort = p)) }
+                            onUpdateProfile { it.copy(ssh = it.ssh.copy(proxyPort = p)) }
                         },
-                        label = { Text("Proxy Port") },
+                        label = { Text("Port") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                         modifier = Modifier.weight(1f)
                     )
                 }
-            }
 
-            if (config.ssh.transport == SshTransport.SSL || config.ssh.transport == SshTransport.WSS) {
-                OutlinedTextField(
-                    value = config.ssh.sni,
-                    onValueChange = { v -> onUpdate { it.copy(ssh = it.ssh.copy(sni = v)) } },
-                    label = { Text("SNI (Server Name Indication)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            if (config.ssh.transport == SshTransport.WS || config.ssh.transport == SshTransport.WSS) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = config.ssh.wsPath,
-                        onValueChange = { v -> onUpdate { it.copy(ssh = it.ssh.copy(wsPath = v)) } },
-                        label = { Text("WS Path") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedTextField(
-                        value = config.ssh.wsHost,
-                        onValueChange = { v -> onUpdate { it.copy(ssh = it.ssh.copy(wsHost = v)) } },
-                        label = { Text("WS Host Header") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            if (config.ssh.transport == SshTransport.HTTP_PROXY || config.ssh.transport == SshTransport.SSL) {
-                Text("HTTP Payload Injector", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                val tags = listOf("[crlf]", "[host]", "[host_port]", "[split]", "[delay_split]", "[ua]", "[protocol]")
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    tags.forEach { tag ->
-                        SuggestionChip(
-                            onClick = {
-                                onUpdate { it.copy(ssh = it.ssh.copy(payload = it.ssh.payload + tag)) }
-                            },
-                            label = { Text(tag, fontSize = 11.sp) }
-                        )
+                if (s.transport == SshTransport.HTTP_PROXY || s.transport == SshTransport.SSL) {
+                    val tags = listOf("[crlf]", "[host]", "[host_port]", "[split]", "[delay_split]", "[ua]", "[protocol]")
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        tags.forEach { tag ->
+                            SuggestionChip(
+                                onClick = {
+                                    onUpdateProfile { it.copy(ssh = it.ssh.copy(payload = it.ssh.payload + tag)) }
+                                },
+                                label = { Text(tag, fontSize = 11.sp) }
+                            )
+                        }
                     }
-                }
-                OutlinedTextField(
-                    value = config.ssh.payload,
-                    onValueChange = { v -> onUpdate { it.copy(ssh = it.ssh.copy(payload = v)) } },
-                    label = { Text("Payload Template") },
-                    minLines = 4,
-                    maxLines = 8,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        } else {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Xray Config JSON", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                OutlinedButton(
-                    onClick = { onUpdate { it.copy(xrayConfigJson = DEFAULT_XRAY_TEMPLATE) } }
-                ) {
-                    Text("Reset Template")
+                    OutlinedTextField(
+                        value = s.payload,
+                        onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(payload = v)) } },
+                        label = { Text("Payload") },
+                        minLines = 3,
+                        maxLines = 6,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
-            OutlinedTextField(
-                value = config.xrayConfigJson,
-                onValueChange = { v -> onUpdate { it.copy(xrayConfigJson = v) } },
-                minLines = 12,
-                maxLines = 22,
-                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        Spacer(Modifier.height(4.dp))
-        Text("Network & TUN Settings", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = config.dnsServer,
-                onValueChange = { v -> onUpdate { it.copy(dnsServer = v) } },
-                label = { Text("Custom DNS") },
-                singleLine = true,
-                modifier = Modifier.weight(1.5f)
-            )
-            OutlinedTextField(
-                value = config.mtu.toString(),
-                onValueChange = { v ->
-                    val m = v.filter(Char::isDigit).toIntOrNull() ?: 1500
-                    onUpdate { it.copy(mtu = m) }
-                },
-                label = { Text("MTU") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true,
-                modifier = Modifier.weight(1f)
-            )
         }
     }
 }
@@ -535,17 +930,17 @@ private fun LogsTab(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Tunnel Logs (${runtime.logs.size})", fontWeight = FontWeight.Bold)
+            Text("Log Koneksi (${runtime.logs.size})", fontWeight = FontWeight.Bold)
             Row {
                 IconButton(onClick = {
                     val text = runtime.logs.joinToString("\n") { "${it.level}: ${it.message}" }
                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     cm.setPrimaryClip(ClipData.newPlainText("vexotun_logs", text))
                 }) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy Logs")
+                    Icon(Icons.Default.ContentCopy, contentDescription = "Salin Log")
                 }
                 IconButton(onClick = onClear) {
-                    Icon(Icons.Default.DeleteOutline, contentDescription = "Clear Logs")
+                    Icon(Icons.Default.DeleteOutline, contentDescription = "Bersihkan Log")
                 }
             }
         }
@@ -597,7 +992,7 @@ private fun SplitTunnelTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text("Split Tunneling Mode", fontWeight = FontWeight.Bold)
+        Text("Filter Aplikasi", fontWeight = FontWeight.Bold)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -612,12 +1007,12 @@ private fun SplitTunnelTab(
             FilterChip(
                 selected = config.splitMode == SplitTunnelMode.INCLUDE_ONLY,
                 onClick = { onSplitModeChange(SplitTunnelMode.INCLUDE_ONLY) },
-                label = { Text("Hanya yang Dipilih") }
+                label = { Text("Hanya Dipilih") }
             )
             FilterChip(
                 selected = config.splitMode == SplitTunnelMode.EXCLUDE_SELECTED,
                 onClick = { onSplitModeChange(SplitTunnelMode.EXCLUDE_SELECTED) },
-                label = { Text("Kecualikan yang Dipilih") }
+                label = { Text("Kecualikan") }
             )
         }
 
@@ -655,7 +1050,7 @@ private fun SplitTunnelTab(
             }
         } else {
             Text(
-                "Semua trafik aplikasi di perangkat akan melewati tunnel VPN (kecuali Vexotun sendiri).",
+                "Semua trafik aplikasi di perangkat akan melewati tunnel VPN.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

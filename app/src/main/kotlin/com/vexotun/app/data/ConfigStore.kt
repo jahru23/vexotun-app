@@ -14,8 +14,9 @@ class ConfigStore(context: Context) {
 
     fun load(): VexotunConfig {
         val raw = prefs.getString(KEY_CONFIG, null) ?: return VexotunConfig()
-        return runCatching { json.decodeFromString<VexotunConfig>(raw) }
+        val loaded = runCatching { json.decodeFromString<VexotunConfig>(raw) }
             .getOrElse { VexotunConfig() }
+        return if (loaded.profiles.isEmpty()) VexotunConfig() else loaded
     }
 
     fun save(config: VexotunConfig) {
@@ -24,6 +25,6 @@ class ConfigStore(context: Context) {
     }
 
     companion object {
-        private const val KEY_CONFIG = "active_config_v1"
+        private const val KEY_CONFIG = "active_config_v2"
     }
 }

@@ -20,6 +20,7 @@ import com.vexotun.app.model.CoreTunnelConfig
 import com.vexotun.app.model.SplitTunnelMode
 import com.vexotun.app.model.TunnelMode
 import com.vexotun.app.model.VexotunConfig
+import com.vexotun.app.model.XrayConfigBuilder
 import core.Core
 import core.LogHandler
 import core.SocketProtector
@@ -49,7 +50,7 @@ class VexotunVpnService : VpnService() {
                 return START_NOT_STICKY
             }
             ACTION_START, null -> {
-                startForegroundNotification("Connecting...")
+                startForegroundNotification("Menghubungkan...")
                 val config = ConfigStore(this).load()
                 startTunnel(config)
                 return START_STICKY
@@ -60,9 +61,10 @@ class VexotunVpnService : VpnService() {
 
     private fun startTunnel(config: VexotunConfig) {
         serviceScope.launch {
+            val profile = config.activeProfile()
             try {
-                TunnelState.setStatus(ConnectionStatus.CONNECTING, "Initializing TUN interface...")
-                TunnelState.appendLog("INFO", "Preparing Vexotun VPN (${config.mode.name})...")
+                TunnelState.setStatus(ConnectionStatus.CONNECTING, "Menghubungkan ke ${profile.name}...")
+                TunnelState.appendLog("INFO", "Memulai ${profile.mode.label}: ${profile.name}")
 
                 val builder = Builder()
                     .setSession("Vexotun")
@@ -74,28 +76,34 @@ class VexotunVpnService : VpnService() {
                 applySplitTunneling(builder, config)
 
                 val pfd = builder.establish()
-                    ?: throw IllegalStateException("VpnService.Builder.establish() returned null")
+                    ?: throw IllegalStateException("Gagal membuat interface VPN")
                 tunInterface = pfd
 
+                val xrayJson = if (profile.mode == TunnelMode.XRAY) {
+                    XrayConfigBuilder.buildJson(profile.xray)
+                } else {
+                    ""
+                }
+
                 val coreConfig = CoreTunnelConfig(
-                    mode = if (config.mode == TunnelMode.SSH) "ssh" else "xray",
+                    mode = if (profile.mode == TunnelMode.SSH) "ssh" else "xray",
                     mtu = config.mtu.coerceIn(1280, 1500),
                     socksPort = config.socksPort,
                     ssh = CoreSshPayload(
-                        host = config.ssh.host.trim(),
-                        port = config.ssh.port,
-                        username = config.ssh.username,
-                        password = config.ssh.password,
-                        privateKey = config.ssh.privateKey,
-                        transport = config.ssh.transport.wireValue,
-                        proxyHost = config.ssh.proxyHost.trim(),
-                        proxyPort = config.ssh.proxyPort,
-                        sni = config.ssh.sni.trim(),
-                        payload = config.ssh.payload,
-                        wsPath = config.ssh.wsPath.trim(),
-                        wsHost = config.ssh.wsHost.trim()
+                        host = profile.ssh.host.trim(),
+                        port = profile.ssh.port,
+                        username = profile.ssh.username,
+                        password = profile.ssh.password,
+                        privateKey = profile.ssh.privateKey,
+                        transport = profile.ssh.transport.wireValue,
+                        proxyHost = profile.ssh.proxyHost.trim(),
+                        proxyPort = profile.ssh.proxyPort,
+                        sni = profile.ssh.sni.trim(),
+                        payload = profile.ssh.payload,
+                        wsPath = profile.ssh.wsPath.trim(),
+                        wsHost = profile.ssh.wsHost.trim()
                     ),
-                    xrayConfigJson = config.xrayConfigJson
+                    xrayConfigJson = xrayJson
                 )
 
                 val protector = SocketProtector { fd -> protect(fd) }
@@ -105,12 +113,12 @@ class VexotunVpnService : VpnService() {
 
                 Core.start(pfd.fd, json.encodeToString(coreConfig), protector, logger)
 
-                TunnelState.setStatus(ConnectionStatus.CONNECTED, "Connected (${config.mode.name})")
-                updateNotification("Connected • ${config.mode.name}")
+                TunnelState.setStatus(ConnectionStatus.CONNECTED, "Terhubung • ${profile.name}")
+                updateNotification("Terhubung • ${profile.name}")
                 startStatsLoop()
             } catch (t: Throwable) {
-                val errMsg = t.message ?: "Unknown tunnel error"
-                TunnelState.appendLog("ERROR", "Connection failed: $errMsg")
+                val errMsg = t.message ?: "Gagal menghubungkan tunnel"
+                TunnelState.appendLog("ERROR", errMsg)
                 TunnelState.setStatus(ConnectionStatus.ERROR, errMsg)
                 cleanupResources()
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -160,7 +168,7 @@ class VexotunVpnService : VpnService() {
     private fun stopTunnel() {
         serviceScope.launch {
             cleanupResources()
-            TunnelState.setStatus(ConnectionStatus.DISCONNECTED, "Disconnected")
+            TunnelState.setStatus(ConnectionStatus.DISCONNECTED, "Terputus")
             TunnelState.updateTraffic(0L, 0L)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -220,12 +228,12 @@ class VexotunVpnService : VpnService() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Vexotun Tunnel")
+            .setContentTitle("Vexotun")
             .setContentText(statusText)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setContentIntent(openIntent)
-            .addAction(0, "Disconnect", stopIntent)
+            .addAction(0, "Putuskan", stopIntent)
             .build()
     }
 
@@ -235,7 +243,7 @@ class VexotunVpnService : VpnService() {
             if (nm?.getNotificationChannel(CHANNEL_ID) == null) {
                 val channel = NotificationChannel(
                     CHANNEL_ID,
-                    "Vexotun VPN Status",
+                    "Status VPN Vexotun",
                     NotificationManager.IMPORTANCE_LOW
                 )
                 nm?.createNotificationChannel(channel)
