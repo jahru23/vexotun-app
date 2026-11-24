@@ -496,7 +496,7 @@ class VexotunVpnService : VpnService() {
                     continue
                 }
                 val lp = cm.getLinkProperties(network) ?: continue
-                for (addr in lp.dnsAddresses) {
+                for (addr in lp.dnsServers) {
                     val host = (addr.hostAddress ?: continue).substringBefore('%')
                     if (addr is java.net.Inet4Address) {
                         v4.add("$host:53")
