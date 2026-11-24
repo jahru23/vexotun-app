@@ -106,21 +106,6 @@ class VexotunVpnService : VpnService() {
                 TunnelState.setStatus(ConnectionStatus.CONNECTING, "Menghubungkan ke ${profile.name}...")
                 TunnelState.appendLog("INFO", "Connecting $protoLabel")
 
-                val builder = Builder()
-                    .setSession("Vexotun")
-                    .setMtu(config.mtu.coerceIn(1280, 1500))
-                    .addAddress("10.0.0.2", 24)
-                    .addRoute("0.0.0.0", 0)
-                    .addAddress("fd00:1::2", 64)
-                    .addRoute("::", 0)
-                    .addDnsServer(config.dnsServer.ifBlank { "8.8.8.8" })
-
-                applySplitTunneling(builder, config)
-
-                val pfd = builder.establish()
-                    ?: throw IllegalStateException("Gagal membuat interface VPN")
-                TunnelState.appendLog("INFO", "VPN siap.")
-
                 val xrayPayload = if (profile.mode == TunnelMode.XRAY && profile.xray.useCustomPayload) {
                     CoreXrayPayload(
                         enabled = true,
@@ -184,34 +169,56 @@ class VexotunVpnService : VpnService() {
                     TunnelState.appendLog(level, message)
                 }
 
-                // Detach FD so tun2socks owns and closes it without triggering Android fdsan SIGABRT.
-                detachedFd = pfd.detachFd()
-                tunInterface = null
-
                 TunnelState.appendLog("INFO", "Memulai ${profile.mode.label}.")
-                Core.start(detachedFd, json.encodeToString(coreConfig), protector, logger)
-                detachedFd = -1
+                Core.prepare(json.encodeToString(coreConfig), protector, logger)
+
+                if (isStopping) {
+                    runCatching { Core.stop() }
+                    return@launch
+                }
 
                 if (canUseMux) {
                     val muxProbe = Core.pingSocksHTTP(config.socksPort, "https://www.gstatic.com/generate_204", 3500)
                     if (muxProbe < 0 && !isStopping) {
                         TunnelState.appendLog("WARN", "Server menolak Mux, beralih otomatis ke mode tanpa Mux...")
                         runCatching { Core.stop() }
-                        val fallbackPfd = builder.establish()
-                            ?: throw IllegalStateException("Gagal membuat ulang interface VPN")
-                        detachedFd = fallbackPfd.detachFd()
                         val fallbackJson = XrayConfigBuilder.buildJson(
                             profile = profile.xray,
                             dnsServer = config.dnsServer,
                             bypassLan = config.bypassLan,
                             muxEnabled = false
                         )
-                        Core.start(detachedFd, json.encodeToString(coreConfig.copy(xrayConfigJson = fallbackJson)), protector, logger)
-                        detachedFd = -1
+                        Core.prepare(json.encodeToString(coreConfig.copy(xrayConfigJson = fallbackJson)), protector, logger)
                     } else if (muxProbe >= 0) {
                         TunnelState.appendLog("INFO", "Xray Mux aktif (${muxProbe} ms).")
                     }
                 }
+
+                if (isStopping) {
+                    runCatching { Core.stop() }
+                    return@launch
+                }
+
+                val builder = Builder()
+                    .setSession("Vexotun")
+                    .setMtu(config.mtu.coerceIn(1280, 1500))
+                    .addAddress("10.0.0.2", 24)
+                    .addRoute("0.0.0.0", 0)
+                    .addAddress("fd00:1::2", 64)
+                    .addRoute("::", 0)
+                    .addDnsServer(config.dnsServer.ifBlank { "8.8.8.8" })
+
+                applySplitTunneling(builder, config)
+
+                val pfd = builder.establish()
+                    ?: throw IllegalStateException("Gagal membuat interface VPN")
+                TunnelState.appendLog("INFO", "VPN siap.")
+
+                // Detach FD so tun2socks owns and closes it without triggering Android fdsan SIGABRT.
+                detachedFd = pfd.detachFd()
+                tunInterface = null
+                Core.attachTun(detachedFd)
+                detachedFd = -1
 
                 TunnelState.appendLog("INFO", "Engine aktif.")
                 TunnelState.appendLog("INFO", "Rute VPN aktif.")

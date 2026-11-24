@@ -11,8 +11,8 @@ android {
     applicationId = "com.vexotun.app"
     minSdk = 24
     targetSdk = 35
-    versionCode = 14
-    versionName = "1.6.3"
+    versionCode = 15
+    versionName = "1.6.4"
   }
 
   signingConfigs {

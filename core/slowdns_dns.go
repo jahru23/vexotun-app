@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"www.bamsoftware.com/git/dnstt.git/dns"
@@ -62,11 +64,20 @@ type DNSPacketConn struct {
 	rrType   uint16
 	// Sending on pollChan permits sendLoop to send an empty polling query.
 	// sendLoop also does its own polling according to a time schedule.
-	pollChan chan struct{}
+	pollChan  chan struct{}
+	closed    chan struct{}
+	closeOnce sync.Once
 	// QueuePacketConn is the direct receiver of ReadFrom and WriteTo calls.
 	// recvLoop and sendLoop take the messages out of the receive and send
 	// queues and actually put them on the network.
 	*turbotunnel.QueuePacketConn
+}
+
+func (c *DNSPacketConn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.closed)
+	})
+	return c.QueuePacketConn.Close()
 }
 
 // NewDNSPacketConn creates a new DNSPacketConn. transport, through its WriteTo
@@ -84,6 +95,7 @@ func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 		domain:          domain,
 		rrType:          rrType,
 		pollChan:        make(chan struct{}, pollLimit),
+		closed:          make(chan struct{}),
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),
 	}
 	go func() {
@@ -189,6 +201,7 @@ func nextPacket(r *bytes.Reader) ([]byte, error) {
 // network, then we don't poll again, which decreases the effective in-flight
 // window.
 func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
+	loggedFirst := false
 	for {
 		var buf [4096]byte
 		n, addr, err := transport.ReadFrom(buf[:])
@@ -201,6 +214,16 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 		if err != nil {
 			log.Printf("MessageFromWireFormat: %v", err)
 			continue
+		}
+
+		if !loggedFirst {
+			loggedFirst = true
+			rcode := resp.Flags & 0x000f
+			ansType := uint16(0)
+			if len(resp.Answer) > 0 {
+				ansType = resp.Answer[0].Type
+			}
+			logMsg("INFO", "SlowDNS recv %dB from %v (rcode=%d, ans=%d, type=%d)", n, addr, rcode, len(resp.Answer), ansType)
 		}
 
 		payload := dnsResponsePayload(&resp, c.domain, c.rrType)
@@ -353,6 +376,7 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error {
 	pollDelay := initPollDelay
 	pollTimer := time.NewTimer(pollDelay)
+	defer pollTimer.Stop()
 	for {
 		var p []byte
 		outgoing := c.QueuePacketConn.OutgoingQueue(addr)
@@ -360,9 +384,13 @@ func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error 
 		// Prioritize sending an actual data packet from outgoing. Only
 		// consider a poll when outgoing is empty.
 		select {
+		case <-c.closed:
+			return nil
 		case p = <-outgoing:
 		default:
 			select {
+			case <-c.closed:
+				return nil
 			case p = <-outgoing:
 			case <-c.pollChan:
 			case <-pollTimer.C:
@@ -402,6 +430,14 @@ func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error 
 		// trying to send more than one packet per query.
 		err := c.send(transport, p, addr)
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			select {
+			case <-c.closed:
+				return nil
+			default:
+			}
 			log.Printf("send: %v", err)
 			continue
 		}

@@ -114,7 +114,7 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			conn, dialErr := dialSlowDNSType(ctx, ns, domain, pubkey, dnsHost, remoteAddr, mtu, candidate, 6*time.Second, protector)
+			conn, dialErr := dialSlowDNSType(ctx, ns, domain, pubkey, dnsHost, remoteAddr, mtu, candidate, 8*time.Second, protector)
 			if dialErr == nil {
 				logMsg("INFO", "SlowDNS (Otomatis): terhubung menggunakan tipe %s", candidate)
 				return conn, nil
@@ -125,7 +125,7 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 		return nil, fmt.Errorf("SlowDNS otomatis gagal di semua tipe: %w", lastErr)
 	}
 
-	return dialSlowDNSType(ctx, ns, domain, pubkey, dnsHost, remoteAddr, mtu, rawType, 12*time.Second, protector)
+	return dialSlowDNSType(ctx, ns, domain, pubkey, dnsHost, remoteAddr, mtu, rawType, 15*time.Second, protector)
 }
 
 func dialSlowDNSType(

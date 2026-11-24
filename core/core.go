@@ -41,11 +41,13 @@ var (
 	activeXray        *xrayEngine
 	activeXrayBridge  *xrayPayloadBridge
 	activeHTTPProxy   *localHTTPProxy
+	activeCfg         TunnelConfig
 	activeSocks       int
 )
 
-// Start initializes the selected tunnel core (SSH or Xray) and attaches tun2socks to tunFd.
-func Start(tunFd int32, configJSON string, protector SocketProtector, logger LogHandler) error {
+// Prepare initializes the tunnel engine (SSH/SlowDNS or Xray) and local SOCKS5/HTTP proxies
+// BEFORE the Android VPN TUN interface is established, so dial traffic never loops into tun0.
+func Prepare(configJSON string, protector SocketProtector, logger LogHandler) error {
 	stateMu.Lock()
 	if isRunning || isStarting {
 		stateMu.Unlock()
@@ -167,6 +169,31 @@ func Start(tunFd int32, configJSON string, protector SocketProtector, logger Log
 		}
 	}
 
+	activeSSH = newSSH
+	activeXray = newXray
+	activeXrayBridge = newBridge
+	activeHTTPProxy = newHTTPProxy
+	activeCfg = cfg
+	activeSocks = cfg.SocksPort
+	isStarting = false
+	activeStartCancel = nil
+	stateMu.Unlock()
+
+	return nil
+}
+
+// AttachTun attaches tun2socks to tunFd after Prepare has succeeded.
+func AttachTun(tunFd int32) error {
+	stateMu.Lock()
+	if isRunning {
+		stateMu.Unlock()
+		return fmt.Errorf("tun2socks is already running")
+	}
+	if activeSSH == nil && activeXray == nil {
+		stateMu.Unlock()
+		return fmt.Errorf("tunnel core is not prepared")
+	}
+	cfg := activeCfg
 	key := &engine.Key{
 		Device:   fmt.Sprintf("fd://%d", tunFd),
 		Proxy:    fmt.Sprintf("socks5://127.0.0.1:%d", cfg.SocksPort),
@@ -175,19 +202,19 @@ func Start(tunFd int32, configJSON string, protector SocketProtector, logger Log
 	}
 	engine.Insert(key)
 	engine.Start()
-
-	activeSSH = newSSH
-	activeXray = newXray
-	activeXrayBridge = newBridge
-	activeHTTPProxy = newHTTPProxy
-	activeSocks = cfg.SocksPort
-	isStarting = false
 	isRunning = true
-	activeStartCancel = nil
 	stateMu.Unlock()
 
 	logMsg("INFO", "tun2socks started on fd://%d -> socks5://127.0.0.1:%d", tunFd, cfg.SocksPort)
 	return nil
+}
+
+// Start initializes the selected tunnel core (SSH or Xray) and attaches tun2socks to tunFd.
+func Start(tunFd int32, configJSON string, protector SocketProtector, logger LogHandler) error {
+	if err := Prepare(configJSON, protector, logger); err != nil {
+		return err
+	}
+	return AttachTun(tunFd)
 }
 
 // Stop shuts down tun2socks and the active tunnel core, aborting any in-progress Start immediately.
