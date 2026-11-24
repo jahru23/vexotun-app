@@ -124,7 +124,10 @@ data class TunnelProfile(
         TunnelMode.SSH -> {
             val hostPart = when {
                 lockInfo?.hideHost == true -> "Server Terkunci"
-                ssh.transport == SshTransport.SLOWDNS -> ssh.nameserver.ifBlank { "NS belum diisi" }
+                ssh.transport == SshTransport.SLOWDNS -> {
+                    val h = ssh.host.ifBlank { ssh.nameserver.ifBlank { "NS belum diisi" } }
+                    if (ssh.host.isNotBlank()) "$h:${ssh.port} (${ssh.dnsType.label})" else "$h (${ssh.dnsType.label})"
+                }
                 else -> "${ssh.host.ifBlank { "Host belum diisi" }}:${ssh.port}"
             }
             "${ssh.transport.label} • $hostPart"

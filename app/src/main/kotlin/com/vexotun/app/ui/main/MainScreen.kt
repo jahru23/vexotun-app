@@ -2173,57 +2173,24 @@ private fun SshProfileEditor(
         onSelect = { t -> onUpdateProfile { it.copy(ssh = it.ssh.copy(transport = t)) } }
     )
 
-    if (s.transport != SshTransport.SLOWDNS) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = s.host,
-                onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(host = v)) } },
-                label = { Text("Host / IP") },
-                singleLine = true,
-                modifier = Modifier.weight(2f)
-            )
-            OutlinedTextField(
-                value = s.port.toString(),
-                onValueChange = { v ->
-                    val p = v.filter(Char::isDigit).toIntOrNull() ?: 22
-                    onUpdateProfile { it.copy(ssh = it.ssh.copy(port = p)) }
-                },
-                label = { Text("Port") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true,
-                modifier = Modifier.weight(1f)
-            )
-        }
-    } else {
-        CompactDropdown(
-            label = "Tipe DNS",
-            selectedLabel = s.dnsType.label,
-            options = SlowDnsRecordType.entries,
-            optionLabel = { it.label },
-            onSelect = { dt -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsType = dt)) } }
-        )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
-            value = s.nameserver,
-            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(nameserver = v.replace("\n", ""))) } },
-            label = { Text("Nameserver (NS)") },
-            singleLine = false,
-            maxLines = 3,
-            modifier = Modifier.fillMaxWidth()
-        )
-        OutlinedTextField(
-            value = s.publicKey,
-            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(publicKey = v.replace("\n", ""))) } },
-            label = { Text("Public Key") },
-            singleLine = false,
-            maxLines = 3,
-            modifier = Modifier.fillMaxWidth()
-        )
-        OutlinedTextField(
-            value = s.dnsServer,
-            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsServer = v.replace("\n", ""))) } },
-            label = { Text("DNS Resolver (mis. 8.8.8.8)") },
+            value = s.host,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(host = v.replace("\n", ""))) } },
+            label = { Text("Host SSH (Domain / IP)") },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.weight(2f)
+        )
+        OutlinedTextField(
+            value = s.port.toString(),
+            onValueChange = { v ->
+                val p = v.filter(Char::isDigit).toIntOrNull() ?: 22
+                onUpdateProfile { it.copy(ssh = it.ssh.copy(port = p)) }
+            },
+            label = { Text("Port") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            modifier = Modifier.weight(1f)
         )
     }
 
@@ -2242,6 +2209,39 @@ private fun SshProfileEditor(
             visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
             modifier = Modifier.weight(1f)
+        )
+    }
+
+    if (s.transport == SshTransport.SLOWDNS) {
+        CompactDropdown(
+            label = "Tipe DNS",
+            selectedLabel = s.dnsType.label,
+            options = SlowDnsRecordType.entries,
+            optionLabel = { it.label },
+            onSelect = { dt -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsType = dt)) } }
+        )
+        OutlinedTextField(
+            value = s.dnsServer,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsServer = v.replace("\n", ""))) } },
+            label = { Text("DNS Resolver (mis. 8.8.8.8)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = s.nameserver,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(nameserver = v.replace("\n", ""))) } },
+            label = { Text("NS (Nameserver)") },
+            singleLine = false,
+            maxLines = 3,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = s.publicKey,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(publicKey = v.replace("\n", ""))) } },
+            label = { Text("Kunci Publik (Public Key)") },
+            singleLine = false,
+            maxLines = 3,
+            modifier = Modifier.fillMaxWidth()
         )
     }
 
