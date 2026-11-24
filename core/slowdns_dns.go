@@ -59,6 +59,7 @@ var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 type DNSPacketConn struct {
 	clientID turbotunnel.ClientID
 	domain   dns.Name
+	rrType   uint16
 	// Sending on pollChan permits sendLoop to send an empty polling query.
 	// sendLoop also does its own polling according to a time schedule.
 	pollChan chan struct{}
@@ -72,12 +73,16 @@ type DNSPacketConn struct {
 // and ReadFrom methods, handles the actual sending and receiving the DNS
 // messages encoded by DNSPacketConn. addr is the address to be passed to
 // transport.WriteTo whenever a message needs to be sent.
-func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name) *DNSPacketConn {
+func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rrType uint16) *DNSPacketConn {
+	if rrType == 0 {
+		rrType = dns.RRTypeTXT
+	}
 	// Generate a new random ClientID.
 	clientID := turbotunnel.NewClientID()
 	c := &DNSPacketConn{
 		clientID:        clientID,
 		domain:          domain,
+		rrType:          rrType,
 		pollChan:        make(chan struct{}, pollLimit),
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),
 	}
@@ -99,7 +104,7 @@ func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name) 
 // dnsResponsePayload extracts the downstream payload of a DNS response, encoded
 // into the RDATA of a TXT RR. It returns nil if the message doesn't pass format
 // checks, or if the name in its Question entry is not a subdomain of domain.
-func dnsResponsePayload(resp *dns.Message, domain dns.Name) []byte {
+func dnsResponsePayload(resp *dns.Message, domain dns.Name, rrType uint16) []byte {
 	if resp.Flags&0x8000 != 0x8000 {
 		// QR != 1, this is not a response.
 		return nil
@@ -119,16 +124,17 @@ func dnsResponsePayload(resp *dns.Message, domain dns.Name) []byte {
 		return nil
 	}
 
-	if answer.Type != dns.RRTypeTXT {
-		// We only support TYPE == TXT.
+	if answer.Type != rrType && answer.Type != dns.RRTypeTXT {
 		return nil
 	}
-	payload, err := dns.DecodeRDataTXT(answer.Data)
-	if err != nil {
-		return nil
+	if answer.Type == dns.RRTypeTXT {
+		payload, err := dns.DecodeRDataTXT(answer.Data)
+		if err != nil {
+			return nil
+		}
+		return payload
 	}
-
-	return payload
+	return answer.Data
 }
 
 // nextPacket reads the next length-prefixed packet from r. It returns a nil
@@ -197,7 +203,7 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 			continue
 		}
 
-		payload := dnsResponsePayload(&resp, c.domain)
+		payload := dnsResponsePayload(&resp, c.domain, c.rrType)
 
 		// Pull out the packets contained in the payload.
 		r := bytes.NewReader(payload)
@@ -317,7 +323,7 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 		Question: []dns.Question{
 			{
 				Name:  name,
-				Type:  dns.RRTypeTXT,
+				Type:  c.rrType,
 				Class: dns.ClassIN,
 			},
 		},

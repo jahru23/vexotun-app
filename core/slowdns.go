@@ -53,6 +53,23 @@ func dnsNameCapacity(domain dns.Name) int {
 	return capacity
 }
 
+func parseSlowDNSType(raw string) (uint16, string) {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "NULL":
+		return 10, "NULL"
+	case "CNAME":
+		return 5, "CNAME"
+	case "NS":
+		return 2, "NS"
+	case "A":
+		return 1, "A"
+	case "MX":
+		return 15, "MX"
+	default:
+		return dns.RRTypeTXT, "TXT"
+	}
+}
+
 func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) (net.Conn, error) {
 	ns := strings.TrimSpace(cfg.Nameserver)
 	pubHex := strings.TrimSpace(cfg.PublicKey)
@@ -110,8 +127,9 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 		return nil, fmt.Errorf("buka UDP socket SlowDNS: %w", err)
 	}
 
-	logMsg("INFO", "SlowDNS (dnstt) dialing %s via DNS %s (MTU=%d)", ns, dnsHost, mtu)
-	pconn := NewDNSPacketConn(udpConn, remoteAddr, domain)
+	rrType, rrLabel := parseSlowDNSType(cfg.DNSType)
+	logMsg("INFO", "SlowDNS (dnstt) dialing %s via DNS %s (Type=%s, MTU=%d)", ns, dnsHost, rrLabel, mtu)
+	pconn := NewDNSPacketConn(udpConn, remoteAddr, domain, rrType)
 
 	kcpConn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
 	if err != nil {

@@ -167,6 +167,7 @@ class VexotunVpnService : VpnService() {
                         wsPath = profile.ssh.wsPath.trim(),
                         wsHost = profile.ssh.wsHost.trim(),
                         dnsServer = profile.ssh.dnsServer.trim().ifBlank { "8.8.8.8" },
+                        dnsType = profile.ssh.dnsType.wireValue,
                         nameserver = profile.ssh.nameserver.trim(),
                         publicKey = profile.ssh.publicKey.trim()
                     ),

@@ -139,6 +139,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vexotun.app.model.LinkExporter
+import com.vexotun.app.model.SlowDnsRecordType
 import com.vexotun.app.model.SplitTunnelMode
 import com.vexotun.app.model.SshProfile
 import com.vexotun.app.model.SshTransport
@@ -2194,6 +2195,13 @@ private fun SshProfileEditor(
             )
         }
     } else {
+        CompactDropdown(
+            label = "Tipe DNS",
+            selectedLabel = s.dnsType.label,
+            options = SlowDnsRecordType.entries,
+            optionLabel = { it.label },
+            onSelect = { dt -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsType = dt)) } }
+        )
         OutlinedTextField(
             value = s.nameserver,
             onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(nameserver = v.replace("\n", ""))) } },

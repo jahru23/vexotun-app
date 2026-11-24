@@ -38,6 +38,7 @@ type SSHConfig struct {
 	WSPath     string `json:"wsPath"`
 	WSHost     string `json:"wsHost"`
 	DNSServer  string `json:"dnsServer"`
+	DNSType    string `json:"dnsType"`
 	Nameserver string `json:"nameserver"`
 	PublicKey  string `json:"publicKey"`
 }

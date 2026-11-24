@@ -20,6 +20,16 @@ enum class SshTransport(val wireValue: String, val label: String) {
 }
 
 @Serializable
+enum class SlowDnsRecordType(val wireValue: String, val label: String) {
+    TXT("TXT", "TXT"),
+    NULL("NULL", "NULL"),
+    CNAME("CNAME", "CNAME"),
+    NS("NS", "NS"),
+    A("A", "A"),
+    MX("MX", "MX")
+}
+
+@Serializable
 enum class XrayProtocol(val wireValue: String, val label: String) {
     VMESS("vmess", "VMess"),
     VLESS("vless", "VLESS"),
@@ -57,6 +67,7 @@ data class SshProfile(
     val wsPath: String = "/",
     val wsHost: String = "",
     val dnsServer: String = "8.8.8.8",
+    val dnsType: SlowDnsRecordType = SlowDnsRecordType.TXT,
     val nameserver: String = "",
     val publicKey: String = ""
 )
@@ -166,6 +177,7 @@ data class CoreSshPayload(
     val wsPath: String,
     val wsHost: String,
     val dnsServer: String = "8.8.8.8",
+    val dnsType: String = "TXT",
     val nameserver: String = "",
     val publicKey: String = ""
 )
