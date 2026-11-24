@@ -32,22 +32,39 @@ type TunnelStats struct {
 }
 
 var (
-	tunnelMu        sync.Mutex
-	isRunning       bool
-	activeSSH       *sshEngine
-	activeXray      *xrayEngine
-	activeXrayBridge *xrayPayloadBridge
-	activeHTTPProxy *localHTTPProxy
-	activeSocks     int
+	stateMu           sync.Mutex
+	isRunning         bool
+	isStarting        bool
+	stopSeq           uint64
+	activeStartCancel context.CancelFunc
+	activeSSH         *sshEngine
+	activeXray        *xrayEngine
+	activeXrayBridge  *xrayPayloadBridge
+	activeHTTPProxy   *localHTTPProxy
+	activeSocks       int
 )
 
 // Start initializes the selected tunnel core (SSH or Xray) and attaches tun2socks to tunFd.
 func Start(tunFd int32, configJSON string, protector SocketProtector, logger LogHandler) error {
-	tunnelMu.Lock()
-	defer tunnelMu.Unlock()
-
-	if isRunning {
+	stateMu.Lock()
+	if isRunning || isStarting {
+		stateMu.Unlock()
 		return fmt.Errorf("tunnel is already running")
+	}
+	isStarting = true
+	mySeq := stopSeq
+	startCtx, cancel := context.WithCancel(context.Background())
+	activeStartCancel = cancel
+	stateMu.Unlock()
+
+	cleanupStart := func() {
+		cancel()
+		stateMu.Lock()
+		isStarting = false
+		if stopSeq == mySeq {
+			activeStartCancel = nil
+		}
+		stateMu.Unlock()
 	}
 
 	debug.SetMemoryLimit(96 << 20)
@@ -58,6 +75,7 @@ func Start(tunFd int32, configJSON string, protector SocketProtector, logger Log
 
 	var cfg TunnelConfig
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+		cleanupStart()
 		return fmt.Errorf("parse tunnel config: %w", err)
 	}
 	if cfg.MTU <= 0 {
@@ -77,41 +95,67 @@ func Start(tunFd int32, configJSON string, protector SocketProtector, logger Log
 
 	logMsg("INFO", "Starting Vexotun core (mode=%s, mtu=%d, lan=%v)", cfg.Mode, cfg.MTU, cfg.AllowLan)
 
+	var newSSH *sshEngine
+	var newXray *xrayEngine
+	var newBridge *xrayPayloadBridge
+	var newHTTPProxy *localHTTPProxy
+
 	switch cfg.Mode {
 	case "ssh":
-		sshEng, err := startSSHEngine(context.Background(), cfg.SSH, listenHost, cfg.SocksPort, protector)
+		sshEng, err := startSSHEngine(startCtx, cfg.SSH, listenHost, cfg.SocksPort, protector)
 		if err != nil {
+			cleanupStart()
 			return err
 		}
-		activeSSH = sshEng
+		newSSH = sshEng
 
 	case "xray":
 		xrayJSON := cfg.XrayConfigJSON
 		if cfg.XrayPayload.Enabled {
-			bridge, err := startXrayPayloadBridge(context.Background(), cfg.XrayPayload, protector)
+			bridge, err := startXrayPayloadBridge(startCtx, cfg.XrayPayload, protector)
 			if err != nil {
+				cleanupStart()
 				return err
 			}
 			rewritten, err := rewriteXrayOutboundEndpoint(xrayJSON, bridge.port)
 			if err != nil {
 				bridge.Stop()
+				cleanupStart()
 				return err
 			}
-			activeXrayBridge = bridge
+			newBridge = bridge
 			xrayJSON = rewritten
 		}
 		xrayEng, err := startXrayEngine(xrayJSON, listenHost, cfg.SocksPort, protector)
 		if err != nil {
-			if activeXrayBridge != nil {
-				activeXrayBridge.Stop()
-				activeXrayBridge = nil
+			if newBridge != nil {
+				newBridge.Stop()
 			}
+			cleanupStart()
 			return err
 		}
-		activeXray = xrayEng
+		newXray = xrayEng
 
 	default:
+		cleanupStart()
 		return fmt.Errorf("unsupported tunnel mode: %s", cfg.Mode)
+	}
+
+	stateMu.Lock()
+	aborted := stopSeq != mySeq || startCtx.Err() != nil
+	if aborted {
+		isStarting = false
+		stateMu.Unlock()
+		if newSSH != nil {
+			newSSH.Stop()
+		}
+		if newXray != nil {
+			newXray.Stop()
+		}
+		if newBridge != nil {
+			newBridge.Stop()
+		}
+		return context.Canceled
 	}
 
 	if cfg.AllowLan {
@@ -119,7 +163,7 @@ func Start(tunFd int32, configJSON string, protector SocketProtector, logger Log
 		if err != nil {
 			logMsg("WARN", "Failed to start Hotspot HTTP proxy: %v", err)
 		} else {
-			activeHTTPProxy = httpProxy
+			newHTTPProxy = httpProxy
 		}
 	}
 
@@ -132,58 +176,76 @@ func Start(tunFd int32, configJSON string, protector SocketProtector, logger Log
 	engine.Insert(key)
 	engine.Start()
 
+	activeSSH = newSSH
+	activeXray = newXray
+	activeXrayBridge = newBridge
+	activeHTTPProxy = newHTTPProxy
 	activeSocks = cfg.SocksPort
+	isStarting = false
 	isRunning = true
+	activeStartCancel = nil
+	stateMu.Unlock()
+
 	logMsg("INFO", "tun2socks started on fd://%d -> socks5://127.0.0.1:%d", tunFd, cfg.SocksPort)
 	return nil
 }
 
-// Stop shuts down tun2socks and the active tunnel core.
+// Stop shuts down tun2socks and the active tunnel core, aborting any in-progress Start immediately.
 func Stop() {
-	tunnelMu.Lock()
-	defer tunnelMu.Unlock()
+	stateMu.Lock()
+	stopSeq++
+	if activeStartCancel != nil {
+		activeStartCancel()
+		activeStartCancel = nil
+	}
+	wasRunning := isRunning
+	isRunning = false
+	activeSocks = 0
+	sshEng := activeSSH
+	activeSSH = nil
+	xrayEng := activeXray
+	activeXray = nil
+	bridge := activeXrayBridge
+	activeXrayBridge = nil
+	httpProxy := activeHTTPProxy
+	activeHTTPProxy = nil
+	stateMu.Unlock()
 
-	if !isRunning {
+	if !wasRunning && sshEng == nil && xrayEng == nil && bridge == nil && httpProxy == nil {
 		return
 	}
 
 	logMsg("INFO", "Stopping Vexotun core...")
-	engine.Stop()
-
-	if activeHTTPProxy != nil {
-		activeHTTPProxy.Stop()
-		activeHTTPProxy = nil
+	if wasRunning {
+		engine.Stop()
 	}
-	if activeSSH != nil {
-		activeSSH.Stop()
-		activeSSH = nil
+	if httpProxy != nil {
+		httpProxy.Stop()
 	}
-	if activeXray != nil {
-		activeXray.Stop()
-		activeXray = nil
+	if sshEng != nil {
+		sshEng.Stop()
 	}
-	if activeXrayBridge != nil {
-		activeXrayBridge.Stop()
-		activeXrayBridge = nil
+	if xrayEng != nil {
+		xrayEng.Stop()
 	}
-
-	activeSocks = 0
-	isRunning = false
+	if bridge != nil {
+		bridge.Stop()
+	}
 	logMsg("INFO", "Vexotun core stopped")
 }
 
 // IsRunning returns whether the tunnel core is currently active.
 func IsRunning() bool {
-	tunnelMu.Lock()
-	defer tunnelMu.Unlock()
+	stateMu.Lock()
+	defer stateMu.Unlock()
 	return isRunning
 }
 
 // GetStats returns JSON-encoded traffic and state stats.
 func GetStats() string {
-	tunnelMu.Lock()
+	stateMu.Lock()
 	running := isRunning
-	tunnelMu.Unlock()
+	stateMu.Unlock()
 
 	b, _ := json.Marshal(TunnelStats{
 		Running:   running,

@@ -21,6 +21,7 @@ enum class SshTransport(val wireValue: String, val label: String) {
 
 @Serializable
 enum class SlowDnsRecordType(val wireValue: String, val label: String) {
+    AUTO("AUTO", "Otomatis"),
     TXT("TXT", "TXT"),
     NULL("NULL", "NULL"),
     CNAME("CNAME", "CNAME"),

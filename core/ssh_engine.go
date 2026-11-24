@@ -65,7 +65,7 @@ func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string,
 		return nil, err
 	}
 
-	authMethods := make([]ssh.AuthMethod, 0, 2)
+	authMethods := make([]ssh.AuthMethod, 0, 3)
 	if strings.TrimSpace(cfg.PrivateKey) != "" {
 		signer, err := ssh.ParsePrivateKey([]byte(cfg.PrivateKey))
 		if err != nil {
@@ -77,6 +77,13 @@ func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string,
 	}
 	if cfg.Password != "" {
 		authMethods = append(authMethods, ssh.Password(cfg.Password))
+		authMethods = append(authMethods, ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+			answers := make([]string, len(questions))
+			for i := range questions {
+				answers[i] = cfg.Password
+			}
+			return answers, nil
+		}))
 	}
 
 	sshCfg := &ssh.ClientConfig{
@@ -91,7 +98,16 @@ func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string,
 		targetAddr = net.JoinHostPort(cfg.Nameserver, "22")
 	}
 	logMsg("INFO", "Authenticating SSH user %q on %s...", cfg.Username, targetAddr)
+	sshDone := make(chan struct{})
+	go func() {
+		select {
+		case <-sshDone:
+		case <-ctx.Done():
+			_ = conn.Close()
+		}
+	}()
 	c, chans, reqs, err := ssh.NewClientConn(conn, targetAddr, sshCfg)
+	close(sshDone)
 	if err != nil {
 		_ = conn.Close()
 		cancel()

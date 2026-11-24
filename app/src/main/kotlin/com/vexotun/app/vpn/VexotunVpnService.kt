@@ -48,6 +48,7 @@ class VexotunVpnService : VpnService() {
     private val json = Json { ignoreUnknownKeys = true }
 
     private var tunInterface: ParcelFileDescriptor? = null
+    private var startJob: Job? = null
     private var statsJob: Job? = null
     private var reconnectJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -78,7 +79,8 @@ class VexotunVpnService : VpnService() {
     }
 
     private fun startTunnel(config: VexotunConfig) {
-        serviceScope.launch {
+        startJob?.cancel()
+        startJob = serviceScope.launch {
             val profile = config.activeProfile()
             if (profile == null) {
                 TunnelState.setStatus(ConnectionStatus.ERROR, "Belum ada config yang dipilih")
@@ -109,6 +111,8 @@ class VexotunVpnService : VpnService() {
                     .setMtu(config.mtu.coerceIn(1280, 1500))
                     .addAddress("10.0.0.2", 24)
                     .addRoute("0.0.0.0", 0)
+                    .addAddress("fd00:1::2", 64)
+                    .addRoute("::", 0)
                     .addDnsServer(config.dnsServer.ifBlank { "8.8.8.8" })
 
                 applySplitTunneling(builder, config)
@@ -276,6 +280,8 @@ class VexotunVpnService : VpnService() {
 
     private fun stopTunnel() {
         isStopping = true
+        startJob?.cancel()
+        startJob = null
         serviceScope.launch {
             TunnelState.appendLog("INFO", "Memutus koneksi...")
             cleanupResources()

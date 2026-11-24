@@ -105,6 +105,46 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 		return nil, fmt.Errorf("domain %s terlalu panjang (MTU=%d)", ns, mtu)
 	}
 
+	rawType := strings.ToUpper(strings.TrimSpace(cfg.DNSType))
+	if rawType == "" || rawType == "AUTO" {
+		candidates := []string{"TXT", "NULL", "CNAME", "NS", "A", "MX"}
+		logMsg("INFO", "SlowDNS (Otomatis): menguji tipe DNS %v ke %s via %s", candidates, ns, dnsHost)
+		var lastErr error
+		for _, candidate := range candidates {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			conn, dialErr := dialSlowDNSType(ctx, ns, domain, pubkey, dnsHost, remoteAddr, mtu, candidate, 6*time.Second, protector)
+			if dialErr == nil {
+				logMsg("INFO", "SlowDNS (Otomatis): terhubung menggunakan tipe %s", candidate)
+				return conn, nil
+			}
+			lastErr = dialErr
+			logMsg("WARN", "SlowDNS tipe %s gagal: %v", candidate, dialErr)
+		}
+		return nil, fmt.Errorf("SlowDNS otomatis gagal di semua tipe: %w", lastErr)
+	}
+
+	return dialSlowDNSType(ctx, ns, domain, pubkey, dnsHost, remoteAddr, mtu, rawType, 12*time.Second, protector)
+}
+
+func dialSlowDNSType(
+	ctx context.Context,
+	ns string,
+	domain dns.Name,
+	pubkey []byte,
+	dnsHost string,
+	remoteAddr *net.UDPAddr,
+	mtu int,
+	typeName string,
+	handshakeTimeout time.Duration,
+	protector SocketProtector,
+) (net.Conn, error) {
+	network := "udp4"
+	if remoteAddr.IP != nil && remoteAddr.IP.To4() == nil {
+		network = "udp6"
+	}
+
 	lc := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
 			if protector == nil {
@@ -122,12 +162,12 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 		},
 	}
 
-	udpConn, err := lc.ListenPacket(ctx, "udp", ":0")
+	udpConn, err := lc.ListenPacket(ctx, network, ":0")
 	if err != nil {
 		return nil, fmt.Errorf("buka UDP socket SlowDNS: %w", err)
 	}
 
-	rrType, rrLabel := parseSlowDNSType(cfg.DNSType)
+	rrType, rrLabel := parseSlowDNSType(typeName)
 	logMsg("INFO", "SlowDNS (dnstt) dialing %s via DNS %s (Type=%s, MTU=%d)", ns, dnsHost, rrLabel, mtu)
 	pconn := NewDNSPacketConn(udpConn, remoteAddr, domain, rrType)
 
@@ -141,13 +181,36 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 	kcpConn.SetNoDelay(0, 0, 0, 1)
 	kcpConn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
 	kcpConn.SetMtu(mtu)
+	_ = kcpConn.SetDeadline(time.Now().Add(handshakeTimeout))
+
+	// Ensure context cancellation or handshake timeout immediately unblocks Noise/smux.
+	handshakeDone := make(chan struct{})
+	go func() {
+		timer := time.NewTimer(handshakeTimeout)
+		defer timer.Stop()
+		select {
+		case <-handshakeDone:
+		case <-ctx.Done():
+			_ = kcpConn.Close()
+			_ = pconn.Close()
+			_ = udpConn.Close()
+		case <-timer.C:
+			_ = kcpConn.Close()
+			_ = pconn.Close()
+			_ = udpConn.Close()
+		}
+	}()
 
 	rw, err := noise.NewClient(kcpConn, pubkey)
 	if err != nil {
+		close(handshakeDone)
 		_ = kcpConn.Close()
 		_ = pconn.Close()
 		_ = udpConn.Close()
-		return nil, fmt.Errorf("SlowDNS Noise handshake: %w", err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("SlowDNS Noise handshake (%s): %w", rrLabel, err)
 	}
 
 	smuxCfg := smux.DefaultConfig()
@@ -157,20 +220,31 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 
 	sess, err := smux.Client(rw, smuxCfg)
 	if err != nil {
+		close(handshakeDone)
 		_ = kcpConn.Close()
 		_ = pconn.Close()
 		_ = udpConn.Close()
-		return nil, fmt.Errorf("SlowDNS smux init: %w", err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("SlowDNS smux init (%s): %w", rrLabel, err)
 	}
 
 	stream, err := sess.OpenStream()
 	if err != nil {
+		close(handshakeDone)
 		_ = sess.Close()
 		_ = kcpConn.Close()
 		_ = pconn.Close()
 		_ = udpConn.Close()
-		return nil, fmt.Errorf("SlowDNS open stream: %w", err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("SlowDNS open stream (%s): %w", rrLabel, err)
 	}
+
+	close(handshakeDone)
+	_ = kcpConn.SetDeadline(time.Time{})
 
 	return &slowDNSConn{
 		Stream:  stream,

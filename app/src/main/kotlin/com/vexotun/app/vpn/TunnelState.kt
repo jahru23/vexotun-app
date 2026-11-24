@@ -102,6 +102,11 @@ object TunnelState {
     }
 
     fun appendLog(level: String, message: String) {
+        when (level.uppercase()) {
+            "ERROR" -> android.util.Log.e("Vexotun", message)
+            "WARN" -> android.util.Log.w("Vexotun", message)
+            else -> android.util.Log.i("Vexotun", message)
+        }
         val entry = LogEntry(id = nextLogId.getAndIncrement(), level = level, message = message)
         _state.update { current ->
             val list = current.logs
