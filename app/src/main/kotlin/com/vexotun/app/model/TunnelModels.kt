@@ -75,22 +75,50 @@ data class XrayProfile(
 )
 
 @Serializable
+data class VxtLockInfo(
+    val locked: Boolean = false,
+    val hideHost: Boolean = false,
+    val hideSni: Boolean = false,
+    val hideAuth: Boolean = false,
+    val hidePayload: Boolean = false,
+    val author: String = "",
+    val note: String = "",
+    val expiresAtMs: Long = 0L
+) {
+    fun isExpired(nowMs: Long = System.currentTimeMillis()): Boolean =
+        expiresAtMs > 0L && nowMs > expiresAtMs
+}
+
+@Serializable
 data class TunnelProfile(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "Profil Baru",
     val mode: TunnelMode = TunnelMode.XRAY,
     val ssh: SshProfile = SshProfile(),
-    val xray: XrayProfile = XrayProfile()
+    val xray: XrayProfile = XrayProfile(),
+    val lockInfo: VxtLockInfo? = null
 ) {
+    val isLocked: Boolean get() = lockInfo?.locked == true
+
     fun summary(): String = when (mode) {
         TunnelMode.SSH -> {
-            val h = ssh.host.ifBlank { "Host belum diisi" }
-            "${ssh.transport.label} • $h:${ssh.port}"
+            val hostPart = if (lockInfo?.hideHost == true) {
+                "Server Terkunci"
+            } else {
+                val h = ssh.host.ifBlank { "Host belum diisi" }
+                "$h:${ssh.port}"
+            }
+            "${ssh.transport.label} • $hostPart"
         }
         TunnelMode.XRAY -> {
-            val h = xray.address.ifBlank { "Host belum diisi" }
             val tlsTag = if (xray.tls) "TLS" else "Non-TLS"
-            "${xray.protocol.label} • ${xray.network.label} $tlsTag • $h:${xray.port}"
+            val hostPart = if (lockInfo?.hideHost == true) {
+                "Server Terkunci"
+            } else {
+                val h = xray.address.ifBlank { "Host belum diisi" }
+                "$h:${xray.port}"
+            }
+            "${xray.protocol.label} • ${xray.network.label} $tlsTag • $hostPart"
         }
     }
 }
@@ -101,12 +129,15 @@ data class VexotunConfig(
     val activeProfileId: String = "",
     val mtu: Int = 1420,
     val socksPort: Int = 10808,
+    val httpPort: Int = 10809,
     val dnsServer: String = "8.8.8.8",
     val splitMode: SplitTunnelMode = SplitTunnelMode.ALL_APPS,
     val splitPackages: List<String> = emptyList(),
     val darkTheme: Boolean = true,
     val autoReconnect: Boolean = true,
-    val bypassLan: Boolean = true
+    val bypassLan: Boolean = true,
+    val wakeLock: Boolean = false,
+    val allowLan: Boolean = false
 ) {
     fun activeProfile(): TunnelProfile? =
         profiles.firstOrNull { it.id == activeProfileId } ?: profiles.firstOrNull()
@@ -133,6 +164,8 @@ data class CoreTunnelConfig(
     val mode: String,
     val mtu: Int,
     val socksPort: Int,
+    val httpPort: Int = 10809,
+    val allowLan: Boolean = false,
     val ssh: CoreSshPayload,
     val xrayConfigJson: String
 )

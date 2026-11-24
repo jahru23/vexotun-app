@@ -14,6 +14,7 @@ import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.vexotun.app.MainActivity
 import com.vexotun.app.R
@@ -48,6 +49,7 @@ class VexotunVpnService : VpnService() {
     private var statsJob: Job? = null
     private var reconnectJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     @Volatile
     private var activeNetworkHandle: Long? = null
@@ -79,6 +81,14 @@ class VexotunVpnService : VpnService() {
             if (profile == null) {
                 TunnelState.setStatus(ConnectionStatus.ERROR, "Belum ada config yang dipilih")
                 TunnelState.appendLog("ERROR", "Gagal memulai: belum ada config")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return@launch
+            }
+            if (profile.lockInfo?.isExpired() == true) {
+                TunnelState.setStatus(ConnectionStatus.ERROR, "Config .vxt sudah kedaluwarsa")
+                TunnelState.appendLog("ERROR", "Config .vxt sudah kedaluwarsa")
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return@launch
             }
@@ -119,6 +129,8 @@ class VexotunVpnService : VpnService() {
                     mode = if (profile.mode == TunnelMode.SSH) "ssh" else "xray",
                     mtu = config.mtu.coerceIn(1280, 1500),
                     socksPort = config.socksPort,
+                    httpPort = config.httpPort,
+                    allowLan = config.allowLan,
                     ssh = CoreSshPayload(
                         host = profile.ssh.host.trim(),
                         port = profile.ssh.port,
@@ -155,6 +167,9 @@ class VexotunVpnService : VpnService() {
 
                 TunnelState.setStatus(ConnectionStatus.CONNECTED, "Terhubung • ${profile.name}")
                 updateNotification("Terhubung • ${profile.name}")
+                if (config.wakeLock) {
+                    acquireWakeLock()
+                }
                 startStatsLoop()
                 if (config.autoReconnect) {
                     registerNetworkCallback()
@@ -282,10 +297,29 @@ class VexotunVpnService : VpnService() {
         }
     }
 
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Vexotun::TunnelWakeLock").apply {
+            setReferenceCounted(false)
+            acquire(12 * 60 * 60 * 1000L)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        runCatching {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+        }
+        wakeLock = null
+    }
+
     private fun cleanupResources() {
         reconnectJob?.cancel()
         reconnectJob = null
         unregisterNetworkCallback()
+        releaseWakeLock()
         statsJob?.cancel()
         statsJob = null
         runCatching { Core.stop() }

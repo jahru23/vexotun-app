@@ -3,9 +3,11 @@ package com.vexotun.app
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -43,6 +45,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handleIncomingUri(intent?.data)
         setContent {
             val config by viewModel.config.collectAsState()
             VexotunTheme(darkTheme = config.darkTheme) {
@@ -56,6 +59,23 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingUri(intent.data)
+    }
+
+    private fun handleIncomingUri(uri: Uri?) {
+        if (uri == null) return
+        viewModel.importVxtUri(uri) { result ->
+            val msg = result.fold(
+                onSuccess = { name -> "Config .vxt diimpor: $name" },
+                onFailure = { err -> err.message ?: "Gagal membaca file .vxt" }
+            )
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
         }
     }
 

@@ -48,7 +48,7 @@ type sshEngine struct {
 	socksAddr string
 }
 
-func startSSHEngine(parentCtx context.Context, cfg SSHConfig, socksPort int, protector SocketProtector) (*sshEngine, error) {
+func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string, socksPort int, protector SocketProtector) (*sshEngine, error) {
 	if cfg.Host == "" || cfg.Port <= 0 {
 		return nil, fmt.Errorf("invalid SSH host or port")
 	}
@@ -93,7 +93,7 @@ func startSSHEngine(parentCtx context.Context, cfg SSHConfig, socksPort int, pro
 	client := ssh.NewClient(c, chans, reqs)
 	logMsg("INFO", "SSH connected successfully")
 
-	socksAddr := fmt.Sprintf("127.0.0.1:%d", socksPort)
+	socksAddr := net.JoinHostPort(listenHost, strconv.Itoa(socksPort))
 	ln, err := net.Listen("tcp", socksAddr)
 	if err != nil {
 		_ = client.Close()

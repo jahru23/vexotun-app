@@ -49,15 +49,15 @@ type xrayEngine struct {
 	instance *xraycore.Instance
 }
 
-func startXrayEngine(configJSON string, socksPort int, protector SocketProtector) (*xrayEngine, error) {
+func startXrayEngine(configJSON string, listenHost string, socksPort int, protector SocketProtector) (*xrayEngine, error) {
 	if strings.TrimSpace(configJSON) == "" {
 		return nil, fmt.Errorf("Xray config JSON is empty")
 	}
 
 	registerXraySocketProtector(protector)
 
-	// Ensure a local socks inbound on 127.0.0.1:<socksPort> exists for tun2socks.
-	normalized, err := ensureSocksInbound(configJSON, socksPort)
+	// Ensure a socks inbound on <listenHost>:<socksPort> exists for tun2socks (and LAN hotspot if 0.0.0.0).
+	normalized, err := ensureSocksInbound(configJSON, listenHost, socksPort)
 	if err != nil {
 		return nil, fmt.Errorf("invalid Xray JSON config: %w", err)
 	}
@@ -77,7 +77,7 @@ func startXrayEngine(configJSON string, socksPort int, protector SocketProtector
 		return nil, fmt.Errorf("start Xray instance: %w", err)
 	}
 
-	logMsg("INFO", "Xray-core started (local SOCKS5 on 127.0.0.1:%d)", socksPort)
+	logMsg("INFO", "Xray-core started (SOCKS5 on %s:%d)", listenHost, socksPort)
 	return &xrayEngine{instance: inst}, nil
 }
 
@@ -90,8 +90,8 @@ func (x *xrayEngine) Stop() {
 	xrayProtectMu.Unlock()
 }
 
-// ensureSocksInbound injects a 127.0.0.1:<socksPort> socks inbound if the user's Xray JSON doesn't define one.
-func ensureSocksInbound(rawJSON string, socksPort int) (string, error) {
+// ensureSocksInbound injects a <listenHost>:<socksPort> socks inbound if the user's Xray JSON doesn't define one.
+func ensureSocksInbound(rawJSON string, listenHost string, socksPort int) (string, error) {
 	var root map[string]any
 	if err := json.Unmarshal([]byte(rawJSON), &root); err != nil {
 		return "", err
@@ -102,7 +102,7 @@ func ensureSocksInbound(rawJSON string, socksPort int) (string, error) {
 	for _, item := range inbounds {
 		if m, ok := item.(map[string]any); ok {
 			if proto, _ := m["protocol"].(string); strings.EqualFold(proto, "socks") {
-				m["listen"] = "127.0.0.1"
+				m["listen"] = listenHost
 				m["port"] = socksPort
 				hasSocks = true
 				break
@@ -114,7 +114,7 @@ func ensureSocksInbound(rawJSON string, socksPort int) (string, error) {
 		socksInbound := map[string]any{
 			"tag":      "socks-in",
 			"port":     socksPort,
-			"listen":   "127.0.0.1",
+			"listen":   listenHost,
 			"protocol": "socks",
 			"settings": map[string]any{
 				"auth": "noauth",

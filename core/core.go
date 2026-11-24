@@ -18,6 +18,8 @@ type TunnelConfig struct {
 	Mode           string    `json:"mode"` // "ssh" or "xray"
 	MTU            int       `json:"mtu"`
 	SocksPort      int       `json:"socksPort"`
+	HTTPPort       int       `json:"httpPort"`
+	AllowLan       bool      `json:"allowLan"`
 	SSH            SSHConfig `json:"ssh"`
 	XrayConfigJSON string    `json:"xrayConfigJson"`
 }
@@ -29,11 +31,12 @@ type TunnelStats struct {
 }
 
 var (
-	tunnelMu    sync.Mutex
-	isRunning   bool
-	activeSSH   *sshEngine
-	activeXray  *xrayEngine
-	activeSocks int
+	tunnelMu        sync.Mutex
+	isRunning       bool
+	activeSSH       *sshEngine
+	activeXray      *xrayEngine
+	activeHTTPProxy *localHTTPProxy
+	activeSocks     int
 )
 
 // Start initializes the selected tunnel core (SSH or Xray) and attaches tun2socks to tunFd.
@@ -61,19 +64,27 @@ func Start(tunFd int32, configJSON string, protector SocketProtector, logger Log
 	if cfg.SocksPort <= 0 {
 		cfg.SocksPort = 10808
 	}
+	if cfg.HTTPPort <= 0 {
+		cfg.HTTPPort = 10809
+	}
 
-	logMsg("INFO", "Starting Vexotun core (mode=%s, mtu=%d)", cfg.Mode, cfg.MTU)
+	listenHost := "127.0.0.1"
+	if cfg.AllowLan {
+		listenHost = "0.0.0.0"
+	}
+
+	logMsg("INFO", "Starting Vexotun core (mode=%s, mtu=%d, lan=%v)", cfg.Mode, cfg.MTU, cfg.AllowLan)
 
 	switch cfg.Mode {
 	case "ssh":
-		sshEng, err := startSSHEngine(context.Background(), cfg.SSH, cfg.SocksPort, protector)
+		sshEng, err := startSSHEngine(context.Background(), cfg.SSH, listenHost, cfg.SocksPort, protector)
 		if err != nil {
 			return err
 		}
 		activeSSH = sshEng
 
 	case "xray":
-		xrayEng, err := startXrayEngine(cfg.XrayConfigJSON, cfg.SocksPort, protector)
+		xrayEng, err := startXrayEngine(cfg.XrayConfigJSON, listenHost, cfg.SocksPort, protector)
 		if err != nil {
 			return err
 		}
@@ -81,6 +92,15 @@ func Start(tunFd int32, configJSON string, protector SocketProtector, logger Log
 
 	default:
 		return fmt.Errorf("unsupported tunnel mode: %s", cfg.Mode)
+	}
+
+	if cfg.AllowLan {
+		httpProxy, err := startLocalHTTPProxy(listenHost, cfg.HTTPPort, cfg.SocksPort)
+		if err != nil {
+			logMsg("WARN", "Failed to start Hotspot HTTP proxy: %v", err)
+		} else {
+			activeHTTPProxy = httpProxy
+		}
 	}
 
 	key := &engine.Key{
@@ -110,6 +130,10 @@ func Stop() {
 	logMsg("INFO", "Stopping Vexotun core...")
 	engine.Stop()
 
+	if activeHTTPProxy != nil {
+		activeHTTPProxy.Stop()
+		activeHTTPProxy = nil
+	}
 	if activeSSH != nil {
 		activeSSH.Stop()
 		activeSSH = nil

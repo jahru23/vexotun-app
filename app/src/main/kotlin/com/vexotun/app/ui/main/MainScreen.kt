@@ -1,10 +1,18 @@
 package com.vexotun.app.ui.main
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -45,13 +53,18 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NetworkPing
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VpnKey
@@ -62,6 +75,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -95,6 +109,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -115,11 +131,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.vexotun.app.model.LinkExporter
 import com.vexotun.app.model.SplitTunnelMode
 import com.vexotun.app.model.SshTransport
 import com.vexotun.app.model.TunnelMode
 import com.vexotun.app.model.TunnelProfile
 import com.vexotun.app.model.VexotunConfig
+import com.vexotun.app.model.VxtLockInfo
 import com.vexotun.app.model.XrayProtocol
 import com.vexotun.app.model.XrayTransport
 import com.vexotun.app.vpn.ConnectionStatus
@@ -130,6 +148,10 @@ import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 private enum class AppPage(val title: String, val icon: ImageVector) {
@@ -139,34 +161,100 @@ private enum class AppPage(val title: String, val icon: ImageVector) {
     SETTINGS("Pengaturan", Icons.Default.Tune)
 }
 
+private data class NavEntry(
+    val page: AppPage,
+    val editingProfileId: String? = null
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     onRequestVpnStart: () -> Unit,
     viewModel: MainScreenViewModel = viewModel()
 ) {
+    val context = LocalContext.current
     val config by viewModel.config.collectAsState()
     val runtime by viewModel.runtimeState.collectAsState()
     val apps by viewModel.apps.collectAsState()
     val isPinging by viewModel.isPinging.collectAsState()
+    val isBatchPinging by viewModel.isBatchPinging.collectAsState()
+    val pingResults by viewModel.pingResults.collectAsState()
+    val isCheckingIp by viewModel.isCheckingIp.collectAsState()
+    val publicIpInfo by viewModel.publicIpInfo.collectAsState()
 
-    var currentPage by rememberSaveable { mutableStateOf(AppPage.TUNNEL) }
-    var editingProfileId by rememberSaveable { mutableStateOf<String?>(null) }
+    val navStack = remember { mutableStateListOf(NavEntry(AppPage.TUNNEL)) }
+    val currentNav = navStack.lastOrNull() ?: NavEntry(AppPage.TUNNEL)
+    val currentPage = currentNav.page
+    val editingProfileId = currentNav.editingProfileId
+
+    fun navigateTo(page: AppPage, editId: String? = null) {
+        val target = NavEntry(page, editId)
+        if (navStack.lastOrNull() != target) {
+            navStack.add(target)
+        }
+    }
+
+    fun navigateBack() {
+        if (navStack.size > 1) {
+            navStack.removeAt(navStack.lastIndex)
+        }
+    }
+
     var showImportDialog by remember { mutableStateOf(false) }
     var showCreateTypeDialog by remember { mutableStateOf(false) }
+    var shareLinkText by remember { mutableStateOf<String?>(null) }
+    var exportVxtProfile by remember { mutableStateOf<TunnelProfile?>(null) }
+    var pendingVxtBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var lastBackPressMs by remember { mutableLongStateOf(0L) }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    BackHandler(
-        enabled = drawerState.isOpen ||
-            (currentPage == AppPage.CONFIG && editingProfileId != null) ||
-            currentPage != AppPage.TUNNEL
-    ) {
+    val vxtExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        val bytes = pendingVxtBytes
+        pendingVxtBytes = null
+        if (uri != null && bytes != null) {
+            val ok = runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+            }.isSuccess
+            Toast.makeText(
+                context,
+                if (ok) "Config .vxt berhasil disimpan" else "Gagal menyimpan file .vxt",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    val vxtImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importVxtUri(uri) { result ->
+                result.onSuccess { name ->
+                    showImportDialog = false
+                    Toast.makeText(context, "Config .vxt diimpor: $name", Toast.LENGTH_SHORT).show()
+                }.onFailure { err ->
+                    Toast.makeText(context, err.message ?: "Gagal impor .vxt", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    BackHandler(enabled = true) {
         when {
             drawerState.isOpen -> scope.launch { drawerState.close() }
-            currentPage == AppPage.CONFIG && editingProfileId != null -> editingProfileId = null
-            currentPage != AppPage.TUNNEL -> currentPage = AppPage.TUNNEL
+            navStack.size > 1 -> navigateBack()
+            else -> {
+                val now = System.currentTimeMillis()
+                if (now - lastBackPressMs < 2000L) {
+                    (context as? Activity)?.finish()
+                } else {
+                    lastBackPressMs = now
+                    Toast.makeText(context, "Tekan sekali lagi untuk keluar", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
@@ -187,6 +275,7 @@ fun MainScreen(
     if (showImportDialog) {
         ImportLinkDialog(
             onDismiss = { showImportDialog = false },
+            onPickVxtFile = { vxtImportLauncher.launch(arrayOf("*/*")) },
             onImport = { linkText ->
                 val result = viewModel.importFromLinks(linkText)
                 if (result.isSuccess) {
@@ -203,8 +292,28 @@ fun MainScreen(
             onSelectMode = { mode ->
                 showCreateTypeDialog = false
                 val newId = viewModel.createProfile(mode)
-                editingProfileId = newId
-                currentPage = AppPage.CONFIG
+                navigateTo(AppPage.CONFIG, newId)
+            }
+        )
+    }
+
+    shareLinkText?.let { link ->
+        ShareLinkDialog(
+            link = link,
+            onDismiss = { shareLinkText = null }
+        )
+    }
+
+    exportVxtProfile?.let { profile ->
+        ExportVxtDialog(
+            profile = profile,
+            onDismiss = { exportVxtProfile = null },
+            onExport = { lockInfo ->
+                val bytes = viewModel.exportVxtBytes(profile, lockInfo)
+                pendingVxtBytes = bytes
+                exportVxtProfile = null
+                val safeName = profile.name.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "vexotun" }
+                vxtExportLauncher.launch("$safeName.vxt")
             }
         )
     }
@@ -241,8 +350,7 @@ fun MainScreen(
                         label = { Text(page.title) },
                         selected = currentPage == page,
                         onClick = {
-                            editingProfileId = null
-                            currentPage = page
+                            navigateTo(page, null)
                             scope.launch { drawerState.close() }
                         },
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
@@ -258,21 +366,13 @@ fun MainScreen(
                         containerColor = MaterialTheme.colorScheme.background
                     ),
                     navigationIcon = {
-                        when {
-                            currentPage == AppPage.CONFIG && editingProfileId != null -> {
-                                IconButton(onClick = { editingProfileId = null }) {
-                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Kembali")
-                                }
+                        if (navStack.size > 1) {
+                            IconButton(onClick = { navigateBack() }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Kembali")
                             }
-                            currentPage == AppPage.APPS || currentPage == AppPage.SETTINGS -> {
-                                IconButton(onClick = { currentPage = AppPage.TUNNEL }) {
-                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Kembali")
-                                }
-                            }
-                            else -> {
-                                IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                                    Icon(Icons.Default.Menu, contentDescription = "Menu")
-                                }
+                        } else {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                Icon(Icons.Default.Menu, contentDescription = "Menu")
                             }
                         }
                     },
@@ -305,13 +405,13 @@ fun MainScreen(
                     ) {
                         NavigationBarItem(
                             selected = currentPage == AppPage.TUNNEL,
-                            onClick = { currentPage = AppPage.TUNNEL },
+                            onClick = { navigateTo(AppPage.TUNNEL, null) },
                             icon = { Icon(Icons.Default.PowerSettingsNew, contentDescription = "Tunnel") },
                             label = { Text("Tunnel") }
                         )
                         NavigationBarItem(
                             selected = currentPage == AppPage.CONFIG,
-                            onClick = { currentPage = AppPage.CONFIG },
+                            onClick = { navigateTo(AppPage.CONFIG, null) },
                             icon = { Icon(Icons.Default.Key, contentDescription = "Config") },
                             label = { Text("Config") }
                         )
@@ -330,39 +430,50 @@ fun MainScreen(
                         runtime = runtime,
                         trafficStateFlow = viewModel.trafficState,
                         isPinging = isPinging,
+                        isCheckingIp = isCheckingIp,
+                        publicIpInfo = publicIpInfo,
                         onSelectProfile = viewModel::selectProfile,
-                        onQuickUpdateBugSni = viewModel::quickUpdateBugSni,
-                        onGoToConfig = {
-                            editingProfileId = null
-                            currentPage = AppPage.CONFIG
-                        },
+                        onGoToConfig = { navigateTo(AppPage.CONFIG, null) },
                         onOpenImport = { showImportDialog = true },
                         onStartClick = onRequestVpnStart,
                         onStopClick = viewModel::stopVpn,
                         onPingClick = viewModel::runPingCheck,
+                        onCheckIpClick = viewModel::checkPublicIp,
                         onClearLogs = viewModel::clearLogs
                     )
                     AppPage.CONFIG -> {
                         val editTarget = editingProfileId?.let { id ->
                             config.profiles.firstOrNull { it.id == id }
                         }
-                        if (editTarget != null) {
+                        if (editTarget != null && !editTarget.isLocked) {
                             ConfigEditorPage(
                                 profile = editTarget,
                                 onUpdateProfile = { transform ->
                                     viewModel.updateProfile(editTarget.id, transform)
                                 },
-                                onDone = { editingProfileId = null }
+                                onDone = { navigateBack() }
                             )
                         } else {
                             ConfigListPage(
                                 config = config,
+                                isBatchPinging = isBatchPinging,
+                                pingResults = pingResults,
                                 onSelectProfile = viewModel::selectProfile,
-                                onEditProfile = { id -> editingProfileId = id },
+                                onEditProfile = { id -> navigateTo(AppPage.CONFIG, id) },
+                                onDuplicateProfile = viewModel::duplicateProfile,
+                                onShareLink = { profile ->
+                                    LinkExporter.exportShareLink(profile)
+                                        .onSuccess { shareLinkText = it }
+                                        .onFailure { err ->
+                                            Toast.makeText(context, err.message ?: "Gagal ekspor link", Toast.LENGTH_SHORT).show()
+                                        }
+                                },
+                                onExportVxt = { profile -> exportVxtProfile = profile },
                                 onDeleteProfile = { id ->
-                                    if (editingProfileId == id) editingProfileId = null
+                                    navStack.removeAll { it.editingProfileId == id }
                                     viewModel.deleteProfile(id)
                                 },
+                                onBatchPing = viewModel::runBatchPingCheck,
                                 onCreateClick = { showCreateTypeDialog = true },
                                 onOpenImport = { showImportDialog = true }
                             )
@@ -549,6 +660,7 @@ private fun CreateConfigTypeDialog(
 @Composable
 private fun ImportLinkDialog(
     onDismiss: () -> Unit,
+    onPickVxtFile: () -> Unit,
     onImport: (String) -> Result<Int>
 ) {
     val context = LocalContext.current
@@ -565,11 +677,11 @@ private fun ImportLinkDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Import Link Config") },
+        title = { Text("Import Config") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Tempel satu atau beberapa link (pisahkan baris baru), atau scan QR",
+                    "Tempel link (vmess/vless/trojan/ss), scan QR, atau pilih file .vxt",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -593,8 +705,10 @@ private fun ImportLinkDialog(
                     )
                 }
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     TextButton(
                         onClick = {
@@ -609,7 +723,7 @@ private fun ImportLinkDialog(
                     ) {
                         Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Clipboard", fontSize = 13.sp)
+                        Text("Clipboard", fontSize = 12.sp)
                     }
                     TextButton(
                         onClick = {
@@ -625,7 +739,15 @@ private fun ImportLinkDialog(
                     ) {
                         Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Scan QR", fontSize = 13.sp)
+                        Text("Scan QR", fontSize = 12.sp)
+                    }
+                    TextButton(
+                        onClick = onPickVxtFile,
+                        contentPadding = PaddingValues(horizontal = 6.dp)
+                    ) {
+                        Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("File .vxt", fontSize = 12.sp)
                     }
                 }
             }
@@ -646,6 +768,190 @@ private fun ImportLinkDialog(
     )
 }
 
+@Composable
+private fun ShareLinkDialog(
+    link: String,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Bagikan Link Config") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    Text(
+                        text = link,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(12.dp),
+                        maxLines = 6,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, link)
+                }
+                context.startActivity(Intent.createChooser(sendIntent, "Bagikan Config"))
+            }) {
+                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Bagikan")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = {
+                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("vexotun_link", link))
+                    Toast.makeText(context, "Link disalin", Toast.LENGTH_SHORT).show()
+                    onDismiss()
+                }) {
+                    Text("Salin")
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Tutup")
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun ExportVxtDialog(
+    profile: TunnelProfile,
+    onDismiss: () -> Unit,
+    onExport: (VxtLockInfo) -> Unit
+) {
+    var lockConfig by remember { mutableStateOf(true) }
+    var hideHost by remember { mutableStateOf(true) }
+    var hideSni by remember { mutableStateOf(true) }
+    var hideAuth by remember { mutableStateOf(true) }
+    var hidePayload by remember { mutableStateOf(profile.mode == TunnelMode.SSH) }
+    var author by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
+    var expiryDays by remember { mutableStateOf(0) } // 0 = unlimited
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Export File .vxt") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "Config: ${profile.name}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Kunci Config (Anti-Edit/Intip)", fontWeight = FontWeight.Medium)
+                    Switch(
+                        checked = lockConfig,
+                        onCheckedChange = {
+                            lockConfig = it
+                            if (!it) {
+                                hideHost = false
+                                hideSni = false
+                                hideAuth = false
+                                hidePayload = false
+                            }
+                        }
+                    )
+                }
+                if (lockConfig) {
+                    VxtCheckRow("Sembunyikan Host / IP", hideHost) { hideHost = it }
+                    VxtCheckRow("Sembunyikan Bug / SNI", hideSni) { hideSni = it }
+                    VxtCheckRow("Sembunyikan Akun (UUID/Pass)", hideAuth) { hideAuth = it }
+                    if (profile.mode == TunnelMode.SSH) {
+                        VxtCheckRow("Sembunyikan Payload SSH", hidePayload) { hidePayload = it }
+                    }
+                }
+                OutlinedTextField(
+                    value = author,
+                    onValueChange = { author = it.replace("\n", "") },
+                    label = { Text("Pembuat (Opsional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("Catatan (Opsional)") },
+                    maxLines = 3,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                CompactDropdown(
+                    label = "Masa Aktif Config",
+                    selectedLabel = when (expiryDays) {
+                        3 -> "3 Hari"
+                        7 -> "7 Hari"
+                        30 -> "30 Hari"
+                        else -> "Tanpa Batas"
+                    },
+                    options = listOf(0, 3, 7, 30),
+                    optionLabel = { d -> if (d == 0) "Tanpa Batas" else "$d Hari" },
+                    onSelect = { expiryDays = it }
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val expiresAt = if (expiryDays > 0) {
+                    System.currentTimeMillis() + expiryDays * 24L * 60L * 60L * 1000L
+                } else 0L
+                onExport(
+                    VxtLockInfo(
+                        locked = lockConfig,
+                        hideHost = lockConfig && hideHost,
+                        hideSni = lockConfig && hideSni,
+                        hideAuth = lockConfig && hideAuth,
+                        hidePayload = lockConfig && hidePayload,
+                        author = author.trim(),
+                        note = note.trim(),
+                        expiresAtMs = expiresAt
+                    )
+                )
+            }) {
+                Text("Simpan .vxt")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Batal")
+            }
+        }
+    )
+}
+
+@Composable
+private fun VxtCheckRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+        Spacer(Modifier.width(6.dp))
+        Text(label, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TunnelPage(
@@ -653,61 +959,21 @@ private fun TunnelPage(
     runtime: VpnRuntimeState,
     trafficStateFlow: StateFlow<TrafficStatsState>,
     isPinging: Boolean,
+    isCheckingIp: Boolean,
+    publicIpInfo: String?,
     onSelectProfile: (String) -> Unit,
-    onQuickUpdateBugSni: (String) -> Unit,
     onGoToConfig: () -> Unit,
     onOpenImport: () -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
     onPingClick: () -> Unit,
+    onCheckIpClick: () -> Unit,
     onClearLogs: () -> Unit
 ) {
     val active = config.activeProfile()
     val isActive = runtime.status == ConnectionStatus.CONNECTED || runtime.status == ConnectionStatus.CONNECTING
     val context = LocalContext.current
     val listState = rememberLazyListState()
-    var showQuickSniDialog by remember { mutableStateOf(false) }
-
-    if (showQuickSniDialog && active != null) {
-        val currentSni = when (active.mode) {
-            TunnelMode.XRAY -> active.xray.sni.ifBlank { active.xray.host }
-            TunnelMode.SSH -> active.ssh.sni.ifBlank { active.ssh.wsHost }
-        }
-        var bugInput by remember(active.id, currentSni) { mutableStateOf(currentSni) }
-        AlertDialog(
-            onDismissRequest = { showQuickSniDialog = false },
-            title = { Text("Ubah Bug / SNI") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Mengubah Host & SNI pada config aktif (${active.name}).",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = bugInput,
-                        onValueChange = { bugInput = it },
-                        label = { Text("Bug / Host / SNI") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    onQuickUpdateBugSni(bugInput)
-                    showQuickSniDialog = false
-                }) {
-                    Text("Simpan")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showQuickSniDialog = false }) {
-                    Text("Batal")
-                }
-            }
-        )
-    }
 
     LazyColumn(
         state = listState,
@@ -766,7 +1032,7 @@ private fun TunnelPage(
                         ) {
                             Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Import Link")
+                            Text("Import Config")
                         }
                     }
                 }
@@ -804,6 +1070,15 @@ private fun TunnelPage(
                                     )
                                     Spacer(Modifier.width(8.dp))
                                     ModeBadge(active.mode)
+                                    if (active.isLocked) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Icon(
+                                            Icons.Default.Lock,
+                                            contentDescription = "Terkunci",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
                                 }
                                 Spacer(Modifier.height(4.dp))
                                 Text(
@@ -820,19 +1095,28 @@ private fun TunnelPage(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                                active.lockInfo?.let { lock ->
+                                    val meta = buildList {
+                                        if (lock.author.isNotBlank()) add("oleh ${lock.author}")
+                                        if (lock.expiresAtMs > 0L) {
+                                            val fmt = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
+                                            add("Exp ${fmt.format(Date(lock.expiresAtMs))}")
+                                        }
+                                        if (lock.note.isNotBlank()) add(lock.note)
+                                    }.joinToString(" • ")
+                                    if (meta.isNotBlank()) {
+                                        Spacer(Modifier.height(3.dp))
+                                        Text(
+                                            meta,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
                             }
                             if (!isActive) {
-                                IconButton(
-                                    onClick = { showQuickSniDialog = true },
-                                    modifier = Modifier.size(34.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Edit,
-                                        contentDescription = "Ubah Bug / SNI",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
                                 ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
                             }
                         }
@@ -960,7 +1244,7 @@ private fun TunnelPage(
         item(key = "ping_row") {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedButton(
@@ -969,16 +1253,55 @@ private fun TunnelPage(
                     modifier = Modifier
                         .weight(1f)
                         .height(46.dp),
-                    shape = RoundedCornerShape(10.dp)
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp)
                 ) {
-                    Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (isPinging) "Mengukur..." else "Cek Ping")
+                    Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (isPinging) "Mengukur..." else "Cek Ping", maxLines = 1, fontSize = 13.sp)
                 }
                 PingStatusChip(
                     trafficStateFlow = trafficStateFlow,
                     modifier = Modifier.height(46.dp)
                 )
+                OutlinedButton(
+                    onClick = onCheckIpClick,
+                    enabled = !isCheckingIp,
+                    modifier = Modifier.height(46.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp)
+                ) {
+                    Icon(Icons.Default.Public, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (isCheckingIp) "..." else "Cek IP", maxLines = 1, fontSize = 13.sp)
+                }
+            }
+            if (!publicIpInfo.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Public,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = publicIpInfo,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
             Spacer(Modifier.height(12.dp))
         }
@@ -1147,9 +1470,15 @@ private fun PingStatusChip(
 @Composable
 private fun ConfigListPage(
     config: VexotunConfig,
+    isBatchPinging: Boolean,
+    pingResults: Map<String, Int>,
     onSelectProfile: (String) -> Unit,
     onEditProfile: (String) -> Unit,
+    onDuplicateProfile: (String) -> Unit,
+    onShareLink: (TunnelProfile) -> Unit,
+    onExportVxt: (TunnelProfile) -> Unit,
     onDeleteProfile: (String) -> Unit,
+    onBatchPing: () -> Unit,
     onCreateClick: () -> Unit,
     onOpenImport: () -> Unit
 ) {
@@ -1161,37 +1490,52 @@ private fun ConfigListPage(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Button(
                 onClick = onCreateClick,
                 modifier = Modifier
                     .weight(1f)
                     .height(46.dp),
-                shape = RoundedCornerShape(10.dp)
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp)
             ) {
                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Buat Config", maxLines = 1)
+                Spacer(Modifier.width(4.dp))
+                Text("Buat", maxLines = 1, fontSize = 13.sp)
             }
             OutlinedButton(
                 onClick = onOpenImport,
                 modifier = Modifier
                     .weight(1f)
                     .height(46.dp),
-                shape = RoundedCornerShape(10.dp)
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp)
             ) {
                 Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Import Link", maxLines = 1)
+                Spacer(Modifier.width(4.dp))
+                Text("Import", maxLines = 1, fontSize = 13.sp)
+            }
+            OutlinedButton(
+                onClick = onBatchPing,
+                enabled = !isBatchPinging && config.profiles.isNotEmpty(),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(46.dp),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp)
+            ) {
+                Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(if (isBatchPinging) "..." else "Tes Ping", maxLines = 1, fontSize = 13.sp)
             }
         }
 
         if (config.profiles.isEmpty()) {
-            Card(
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
             ) {
                 Column(
                     modifier = Modifier
@@ -1206,7 +1550,7 @@ private fun ConfigListPage(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        "Tekan \"Buat Config\" untuk membuat config Xray / SSH baru, atau \"Import Link\" untuk menempel link.",
+                        "Tekan \"Buat\" untuk membuat config Xray / SSH baru, atau \"Import\" untuk link, QR, dan file .vxt.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -1220,15 +1564,14 @@ private fun ConfigListPage(
             ) {
                 items(config.profiles, key = { it.id }) { profile ->
                     val isSelected = profile.id == config.activeProfile()?.id
-                    Card(
+                    val latency = pingResults[profile.id]
+                    var menuExpanded by remember { mutableStateOf(false) }
+
+                    Surface(
                         onClick = { onSelectProfile(profile.id) },
-                        border = BorderStroke(
-                            width = if (isSelected) 1.5.dp else 1.dp,
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                        ),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null
                     ) {
                         Row(
                             modifier = Modifier
@@ -1248,6 +1591,15 @@ private fun ConfigListPage(
                                         overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.weight(1f, fill = false)
                                     )
+                                    if (profile.isLocked) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Icon(
+                                            Icons.Default.Lock,
+                                            contentDescription = "Terkunci",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
                                     if (isSelected) {
                                         Spacer(Modifier.width(6.dp))
                                         Icon(
@@ -1267,26 +1619,76 @@ private fun ConfigListPage(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            IconButton(
-                                onClick = { onEditProfile(profile.id) },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.Edit,
-                                    contentDescription = "Edit Config",
-                                    modifier = Modifier.size(18.dp)
+                            if (latency != null) {
+                                val pingColor = when {
+                                    latency < 0 -> MaterialTheme.colorScheme.error
+                                    latency < 120 -> Color(0xFF4DB6AC)
+                                    latency < 250 -> Color(0xFFF59E0B)
+                                    else -> MaterialTheme.colorScheme.error
+                                }
+                                Text(
+                                    text = if (latency >= 0) "${latency}ms" else "Timeout",
+                                    color = pingColor,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp)
                                 )
                             }
-                            IconButton(
-                                onClick = { onDeleteProfile(profile.id) },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.DeleteOutline,
-                                    contentDescription = "Hapus Config",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                            Box {
+                                IconButton(
+                                    onClick = { menuExpanded = true },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.MoreVert,
+                                        contentDescription = "Opsi Config",
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = menuExpanded,
+                                    onDismissRequest = { menuExpanded = false }
+                                ) {
+                                    if (!profile.isLocked) {
+                                        DropdownMenuItem(
+                                            text = { Text("Edit") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                onEditProfile(profile.id)
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Duplikat") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                onDuplicateProfile(profile.id)
+                                            }
+                                        )
+                                        if (profile.mode == TunnelMode.XRAY) {
+                                            DropdownMenuItem(
+                                                text = { Text("Share Link") },
+                                                onClick = {
+                                                    menuExpanded = false
+                                                    onShareLink(profile)
+                                                }
+                                            )
+                                        }
+                                        DropdownMenuItem(
+                                            text = { Text("Export .vxt") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                onExportVxt(profile)
+                                            }
+                                        )
+                                    }
+                                    DropdownMenuItem(
+                                        text = { Text("Hapus", color = MaterialTheme.colorScheme.error) },
+                                        onClick = {
+                                            menuExpanded = false
+                                            onDeleteProfile(profile.id)
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -1475,22 +1877,23 @@ private fun XrayProfileEditor(
         )
     }
 
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-            value = x.host,
-            onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(host = v)) } },
-            label = { Text("Host Header") },
-            singleLine = true,
-            modifier = Modifier.weight(1f)
-        )
-        OutlinedTextField(
-            value = x.sni,
-            onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(sni = v)) } },
-            label = { Text("SNI") },
-            singleLine = true,
-            modifier = Modifier.weight(1f)
-        )
-    }
+    OutlinedTextField(
+        value = x.host,
+        onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(host = v.replace("\n", ""))) } },
+        label = { Text("Host Header") },
+        singleLine = false,
+        maxLines = 3,
+        modifier = Modifier.fillMaxWidth()
+    )
+
+    OutlinedTextField(
+        value = x.sni,
+        onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(sni = v.replace("\n", ""))) } },
+        label = { Text("SNI") },
+        singleLine = false,
+        maxLines = 3,
+        modifier = Modifier.fillMaxWidth()
+    )
 
     Card(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
@@ -1593,30 +1996,31 @@ private fun SshProfileEditor(
     if (s.transport == SshTransport.SSL || s.transport == SshTransport.WSS) {
         OutlinedTextField(
             value = s.sni,
-            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(sni = v)) } },
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(sni = v.replace("\n", ""))) } },
             label = { Text("SNI") },
-            singleLine = true,
+            singleLine = false,
+            maxLines = 3,
             modifier = Modifier.fillMaxWidth()
         )
     }
 
     if (s.transport == SshTransport.WS || s.transport == SshTransport.WSS) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = s.wsPath,
-                onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(wsPath = v)) } },
-                label = { Text("WS Path") },
-                singleLine = true,
-                modifier = Modifier.weight(1f)
-            )
-            OutlinedTextField(
-                value = s.wsHost,
-                onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(wsHost = v)) } },
-                label = { Text("WS Host") },
-                singleLine = true,
-                modifier = Modifier.weight(1f)
-            )
-        }
+        OutlinedTextField(
+            value = s.wsPath,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(wsPath = v.replace("\n", ""))) } },
+            label = { Text("WS Path") },
+            singleLine = false,
+            maxLines = 2,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = s.wsHost,
+            onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(wsHost = v.replace("\n", ""))) } },
+            label = { Text("WS Host") },
+            singleLine = false,
+            maxLines = 3,
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 
     if (s.transport != SshTransport.DIRECT) {
@@ -1717,27 +2121,21 @@ private fun SplitTunnelPage(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            FilterChip(
-                selected = config.splitMode == SplitTunnelMode.ALL_APPS,
-                onClick = { onSplitModeChange(SplitTunnelMode.ALL_APPS) },
-                label = { Text("Semua Aplikasi") }
-            )
-            FilterChip(
-                selected = config.splitMode == SplitTunnelMode.INCLUDE_ONLY,
-                onClick = { onSplitModeChange(SplitTunnelMode.INCLUDE_ONLY) },
-                label = { Text("Hanya Dipilih") }
-            )
-            FilterChip(
-                selected = config.splitMode == SplitTunnelMode.EXCLUDE_SELECTED,
-                onClick = { onSplitModeChange(SplitTunnelMode.EXCLUDE_SELECTED) },
-                label = { Text("Kecualikan") }
-            )
+        val splitModes = listOf(
+            SplitTunnelMode.ALL_APPS to "Semua",
+            SplitTunnelMode.INCLUDE_ONLY to "Dipilih",
+            SplitTunnelMode.EXCLUDE_SELECTED to "Kecuali"
+        )
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            splitModes.forEachIndexed { index, (mode, label) ->
+                SegmentedButton(
+                    selected = config.splitMode == mode,
+                    onClick = { onSplitModeChange(mode) },
+                    shape = SegmentedButtonDefaults.itemShape(index, splitModes.size)
+                ) {
+                    Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
 
         if (config.splitMode != SplitTunnelMode.ALL_APPS) {
@@ -1784,10 +2182,10 @@ private fun SplitTunnelPage(
                 }
             }
         } else {
-            Card(
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
             ) {
                 Text(
                     "Semua trafik aplikasi di perangkat akan melewati tunnel VPN.",
@@ -1805,6 +2203,33 @@ private fun SettingsPage(
     config: VexotunConfig,
     onUpdateConfig: ((VexotunConfig) -> VexotunConfig) -> Unit
 ) {
+    val context = LocalContext.current
+    val pm = remember { context.getSystemService(PowerManager::class.java) }
+    val batteryExempt = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+        } else true
+    }
+
+    val dnsPresets = remember {
+        listOf(
+            "8.8.8.8" to "Google (8.8.8.8)",
+            "1.1.1.1" to "Cloudflare (1.1.1.1)",
+            "94.140.14.14" to "AdGuard (94.140.14.14)"
+        )
+    }
+    var customDnsSelected by remember(config.dnsServer) {
+        mutableStateOf(dnsPresets.none { it.first == config.dnsServer.trim() })
+    }
+    val selectedDnsLabel = if (customDnsSelected) {
+        "Custom"
+    } else {
+        dnsPresets.firstOrNull { it.first == config.dnsServer.trim() }?.second ?: "Custom"
+    }
+    val localIp = remember(config.allowLan) {
+        if (config.allowLan) findLocalLanIp() else "127.0.0.1"
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1837,6 +2262,87 @@ private fun SettingsPage(
                     checked = config.bypassLan,
                     onCheckedChange = { bypass -> onUpdateConfig { it.copy(bypassLan = bypass) } }
                 )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsSwitchRow(
+                    title = "Jaga Koneksi (WakeLock)",
+                    subtitle = "Mencegah sistem menidurkan tunnel saat layar mati",
+                    checked = config.wakeLock,
+                    onCheckedChange = { wl -> onUpdateConfig { it.copy(wakeLock = wl) } }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !batteryExempt) {
+                                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                    data = Uri.parse("package:${context.packageName}")
+                                }
+                            } else {
+                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                            }
+                            runCatching { context.startActivity(intent) }
+                        }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Optimasi Baterai", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (batteryExempt) "Sudah dikecualikan (Aman)" else "Ketuk untuk kecualikan dari pembatasan baterai",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (batteryExempt) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                SettingsSwitchRow(
+                    title = "Bagikan VPN via Hotspot",
+                    subtitle = "Buka Proxy HTTP & SOCKS5 untuk laptop/HP lain",
+                    checked = config.allowLan,
+                    onCheckedChange = { lan -> onUpdateConfig { it.copy(allowLan = lan) } }
+                )
+                if (config.allowLan) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "HTTP Proxy: $localIp:${config.httpPort}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                "SOCKS5 Proxy: $localIp:${config.socksPort}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                val text = "HTTP $localIp:${config.httpPort} | SOCKS5 $localIp:${config.socksPort}"
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("vexotun_proxy", text))
+                                Toast.makeText(context, "Alamat proxy disalin", Toast.LENGTH_SHORT).show()
+                            }
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Salin Proxy", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
             }
         }
 
@@ -1851,29 +2357,55 @@ private fun SettingsPage(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text("Jaringan", fontWeight = FontWeight.SemiBold)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CompactDropdown(
+                    label = "Preset DNS",
+                    selectedLabel = selectedDnsLabel,
+                    options = dnsPresets.map { it.first } + "custom",
+                    optionLabel = { key ->
+                        dnsPresets.firstOrNull { it.first == key }?.second ?: "Custom"
+                    },
+                    onSelect = { key ->
+                        if (key == "custom") {
+                            customDnsSelected = true
+                        } else {
+                            customDnsSelected = false
+                            onUpdateConfig { it.copy(dnsServer = key) }
+                        }
+                    }
+                )
+                if (customDnsSelected) {
                     OutlinedTextField(
                         value = config.dnsServer,
-                        onValueChange = { v -> onUpdateConfig { it.copy(dnsServer = v) } },
-                        label = { Text("DNS") },
+                        onValueChange = { v -> onUpdateConfig { it.copy(dnsServer = v.replace("\n", "")) } },
+                        label = { Text("DNS Custom") },
                         singleLine = true,
-                        modifier = Modifier.weight(1.5f)
-                    )
-                    OutlinedTextField(
-                        value = config.mtu.toString(),
-                        onValueChange = { v ->
-                            val m = v.filter(Char::isDigit).toIntOrNull() ?: 1420
-                            onUpdateConfig { it.copy(mtu = m) }
-                        },
-                        label = { Text("MTU") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
+                OutlinedTextField(
+                    value = config.mtu.toString(),
+                    onValueChange = { v ->
+                        val m = v.filter(Char::isDigit).toIntOrNull() ?: 1420
+                        onUpdateConfig { it.copy(mtu = m) }
+                    },
+                    label = { Text("MTU") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     }
+}
+
+private fun findLocalLanIp(): String {
+    return runCatching {
+        NetworkInterface.getNetworkInterfaces()?.toList()
+            ?.filter { it.isUp && !it.isLoopback }
+            ?.flatMap { it.inetAddresses.toList() }
+            ?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress && it.isSiteLocalAddress }
+            ?.hostAddress
+    }.getOrNull() ?: "192.168.43.1"
 }
 
 @Composable

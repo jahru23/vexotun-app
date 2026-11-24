@@ -6,29 +6,41 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Uri
 import android.os.Build
 import android.telephony.TelephonyManager
 import androidx.core.content.pm.PackageInfoCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import java.net.HttpURLConnection
 import java.net.Inet4Address
+import java.net.URL
 import java.util.Locale
+import java.util.UUID
 import com.vexotun.app.data.ConfigStore
 import com.vexotun.app.model.LinkParser
 import com.vexotun.app.model.SplitTunnelMode
 import com.vexotun.app.model.TunnelMode
 import com.vexotun.app.model.TunnelProfile
 import com.vexotun.app.model.VexotunConfig
+import com.vexotun.app.model.VxtCodec
+import com.vexotun.app.model.VxtLockInfo
 import com.vexotun.app.vpn.TunnelState
 import com.vexotun.app.vpn.VexotunVpnService
 import core.Core
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 data class InstalledApp(
     val packageName: String,
@@ -51,6 +63,18 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _isPinging = MutableStateFlow(false)
     val isPinging: StateFlow<Boolean> = _isPinging.asStateFlow()
+
+    private val _isBatchPinging = MutableStateFlow(false)
+    val isBatchPinging: StateFlow<Boolean> = _isBatchPinging.asStateFlow()
+
+    private val _pingResults = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val pingResults: StateFlow<Map<String, Int>> = _pingResults.asStateFlow()
+
+    private val _isCheckingIp = MutableStateFlow(false)
+    val isCheckingIp: StateFlow<Boolean> = _isCheckingIp.asStateFlow()
+
+    private val _publicIpInfo = MutableStateFlow<String?>(null)
+    val publicIpInfo: StateFlow<String?> = _publicIpInfo.asStateFlow()
 
     init {
         logDeviceAndNetworkInfo()
@@ -168,14 +192,112 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun quickUpdateBugSni(value: String) {
-        val active = _config.value.activeProfile() ?: return
-        val trimmed = value.trim()
-        updateProfile(active.id) { p ->
-            when (p.mode) {
-                TunnelMode.XRAY -> p.copy(xray = p.xray.copy(sni = trimmed, host = trimmed))
-                TunnelMode.SSH -> p.copy(ssh = p.ssh.copy(sni = trimmed, wsHost = trimmed))
+    fun duplicateProfile(profileId: String) {
+        val original = _config.value.profiles.firstOrNull { it.id == profileId } ?: return
+        if (original.isLocked) return
+        val copy = original.copy(
+            id = UUID.randomUUID().toString(),
+            name = "${original.name} (Salinan)"
+        )
+        updateConfig { cfg ->
+            cfg.copy(
+                profiles = cfg.profiles + copy,
+                activeProfileId = copy.id
+            )
+        }
+    }
+
+    fun importVxtUri(uri: Uri, onResult: ((Result<String>) -> Unit)? = null) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = getApplication<Application>().contentResolver.openInputStream(uri)?.use {
+                        it.readBytes()
+                    } ?: error("Tidak dapat membuka file .vxt")
+                    VxtCodec.decode(bytes).getOrThrow()
+                }
             }
+            val finalResult = result.map { profile ->
+                updateConfig { cfg ->
+                    cfg.copy(
+                        profiles = cfg.profiles + profile,
+                        activeProfileId = profile.id
+                    )
+                }
+                TunnelState.appendLog("INFO", "Config .vxt diimpor: ${profile.name}")
+                profile.name
+            }
+            onResult?.invoke(finalResult)
+        }
+    }
+
+    fun exportVxtBytes(profile: TunnelProfile, lockInfo: VxtLockInfo): ByteArray =
+        VxtCodec.encode(profile, lockInfo)
+
+    fun runBatchPingCheck() {
+        val profiles = _config.value.profiles
+        if (_isBatchPinging.value || profiles.isEmpty()) return
+        _isBatchPinging.value = true
+        viewModelScope.launch {
+            val semaphore = Semaphore(5)
+            val results = withContext(Dispatchers.IO) {
+                coroutineScope {
+                    profiles.map { profile ->
+                        async {
+                            semaphore.withPermit {
+                                val ms = when (profile.mode) {
+                                    TunnelMode.SSH -> {
+                                        if (profile.ssh.host.isNotBlank()) {
+                                            Core.pingTCP(profile.ssh.host.trim(), profile.ssh.port, 2500)
+                                        } else -1
+                                    }
+                                    TunnelMode.XRAY -> {
+                                        if (profile.xray.address.isNotBlank()) {
+                                            Core.pingTCP(profile.xray.address.trim(), profile.xray.port, 2500)
+                                        } else -1
+                                    }
+                                }
+                                profile.id to ms
+                            }
+                        }
+                    }.awaitAll().toMap()
+                }
+            }
+            _pingResults.value = results
+            _isBatchPinging.value = false
+        }
+    }
+
+    fun checkPublicIp() {
+        if (_isCheckingIp.value) return
+        _isCheckingIp.value = true
+        viewModelScope.launch {
+            val info = withContext(Dispatchers.IO) {
+                runCatching {
+                    val conn = (URL("https://ipwho.is/").openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 5000
+                        readTimeout = 5000
+                        requestMethod = "GET"
+                    }
+                    conn.inputStream.bufferedReader().use { reader ->
+                        val body = reader.readText()
+                        val json = JSONObject(body)
+                        val ip = json.optString("ip", "")
+                        val cc = json.optString("country_code", "")
+                        val isp = json.optJSONObject("connection")?.optString("isp", "") ?: ""
+                        if (ip.isBlank()) error("IP kosong")
+                        listOf(ip, cc, isp).filter { it.isNotBlank() }.joinToString(" • ")
+                    }
+                }.getOrNull()
+            }
+            if (info != null) {
+                _publicIpInfo.value = info
+                TunnelState.appendLog("INFO", "IP Publik: $info")
+            } else {
+                _publicIpInfo.value = "Gagal cek IP"
+                TunnelState.appendLog("WARN", "Gagal mengecek IP publik")
+            }
+            _isCheckingIp.value = false
         }
     }
 
