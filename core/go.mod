@@ -4,21 +4,19 @@ go 1.26.3
 
 require (
 	github.com/gorilla/websocket v1.5.3
+	github.com/net2share/vaydns v0.2.8
 	github.com/xjasonlyu/tun2socks/v2 v2.7.0
-	github.com/xtaci/kcp-go/v5 v5.6.8
-	github.com/xtaci/smux v1.5.24
 	github.com/xtls/xray-core v1.260327.0
 	golang.org/x/crypto v0.59.0
-	www.bamsoftware.com/git/dnstt.git v1.20260501.0
 )
 
 require (
 	github.com/ajg/form v1.7.1 // indirect
-	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/apernet/quic-go v0.59.1-0.20260217092621-db4786c77a22 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/flynn/noise v1.0.0 // indirect
+	github.com/flynn/noise v1.1.0 // indirect
 	github.com/ghodss/yaml v1.0.1-0.20220118164431-d8423dcdf344 // indirect
 	github.com/go-chi/chi/v5 v5.3.0 // indirect
 	github.com/go-chi/cors v1.2.2 // indirect
@@ -29,9 +27,9 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/schema v1.4.1 // indirect
 	github.com/juju/ratelimit v1.0.2 // indirect
-	github.com/klauspost/compress v1.17.4 // indirect
+	github.com/klauspost/compress v1.18.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/klauspost/reedsolomon v1.12.0 // indirect
+	github.com/klauspost/reedsolomon v1.13.0 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pires/go-proxyproto v0.11.0 // indirect
@@ -40,11 +38,12 @@ require (
 	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af // indirect
 	github.com/sagernet/sing v0.5.1 // indirect
 	github.com/sagernet/sing-shadowsocks v0.2.7 // indirect
-	github.com/templexxx/cpu v0.1.0 // indirect
-	github.com/templexxx/xorsimd v0.4.2 // indirect
+	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/vishvananda/netlink v1.3.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
+	github.com/xtaci/kcp-go/v5 v5.6.61 // indirect
+	github.com/xtaci/smux v1.5.50 // indirect
 	github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

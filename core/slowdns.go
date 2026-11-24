@@ -4,70 +4,101 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/xtaci/kcp-go/v5"
-	"github.com/xtaci/smux"
-	"www.bamsoftware.com/git/dnstt.git/dns"
-	"www.bamsoftware.com/git/dnstt.git/noise"
-	"www.bamsoftware.com/git/dnstt.git/turbotunnel"
+	vayclient "github.com/net2share/vaydns/client"
 )
 
-type slowDNSConn struct {
-	*smux.Stream
-	sess    *smux.Session
-	kcpConn *kcp.UDPSession
-	pconn   net.PacketConn
-	udpConn net.PacketConn
+type vaydnsConn struct {
+	net.Conn
+	tunnel *vayclient.Tunnel
 }
 
-func (c *slowDNSConn) Close() error {
+func (c *vaydnsConn) Close() error {
 	var err error
-	if c.Stream != nil {
-		err = c.Stream.Close()
+	if c.Conn != nil {
+		err = c.Conn.Close()
 	}
-	if c.sess != nil {
-		_ = c.sess.Close()
-	}
-	if c.kcpConn != nil {
-		_ = c.kcpConn.Close()
-	}
-	if c.pconn != nil {
-		_ = c.pconn.Close()
-	}
-	if c.udpConn != nil {
-		_ = c.udpConn.Close()
+	if c.tunnel != nil {
+		_ = c.tunnel.Close()
 	}
 	return err
 }
 
-func dnsNameCapacity(domain dns.Name) int {
-	capacity := 255 - 1
-	for _, label := range domain {
-		capacity -= len(label) + 1
+func normalizeVaydnsRecordType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "txt", "null", "ns", "cname", "mx", "srv", "a", "aaaa", "caa":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return "txt"
 	}
-	capacity = capacity * 63 / 64
-	capacity = capacity * 5 / 8
-	return capacity
 }
 
-func parseSlowDNSType(raw string) (uint16, string) {
-	switch strings.ToUpper(strings.TrimSpace(raw)) {
-	case "NULL":
-		return 10, "NULL"
-	case "CNAME":
-		return 5, "CNAME"
-	case "NS":
-		return 2, "NS"
-	case "A":
-		return 1, "A"
-	case "MX":
-		return 15, "MX"
+func buildResolver(cfg SSHConfig, protector SocketProtector) (vayclient.Resolver, string, error) {
+	transport := strings.ToLower(strings.TrimSpace(cfg.DNSTransport))
+	addr := strings.TrimSpace(cfg.DNSServer)
+
+	var rType vayclient.ResolverType
+	switch transport {
+	case "doh":
+		rType = vayclient.ResolverTypeDOH
+		if addr == "" {
+			addr = "https://dns.google/dns-query"
+		} else if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
+			addr = "https://" + addr + "/dns-query"
+		}
+	case "dot":
+		rType = vayclient.ResolverTypeDOT
+		if addr == "" {
+			addr = "dns.google:853"
+		} else if !strings.Contains(addr, ":") {
+			addr = net.JoinHostPort(addr, "853")
+		}
 	default:
-		return dns.RRTypeTXT, "TXT"
+		rType = vayclient.ResolverTypeUDP
+		if addr == "" {
+			addr = "8.8.8.8:53"
+		} else if !strings.Contains(addr, ":") {
+			addr = net.JoinHostPort(addr, "53")
+		}
 	}
+
+	resolver, err := vayclient.NewResolver(rType, addr)
+	if err != nil {
+		return vayclient.Resolver{}, "", err
+	}
+
+	resolver.DialerControl = func(network, address string, c syscall.RawConn) error {
+		if protector == nil {
+			return nil
+		}
+		var protectErr error
+		if err := c.Control(func(fd uintptr) {
+			if !protector.Protect(int32(fd)) {
+				protectErr = fmt.Errorf("protect socket fd=%d failed", fd)
+			}
+		}); err != nil {
+			return err
+		}
+		return protectErr
+	}
+
+	if rType == vayclient.ResolverTypeDOH {
+		pd := newProtectedDialer(protector, 15*time.Second)
+		resolver.RoundTripper = &http.Transport{
+			DialContext:           pd.DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          10,
+			IdleConnTimeout:       30 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
+
+	return resolver, addr, nil
 }
 
 func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) (net.Conn, error) {
@@ -77,106 +108,69 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 		return nil, fmt.Errorf("SlowDNS membutuhkan Nameserver (NS) dan Public Key")
 	}
 
-	domain, err := dns.ParseName(ns)
+	resolver, resolvedAddr, err := buildResolver(cfg, protector)
 	if err != nil {
-		return nil, fmt.Errorf("nameserver tidak valid (%s): %w", ns, err)
+		return nil, fmt.Errorf("SlowDNS resolver: %w", err)
 	}
 
-	pubkey, err := noise.DecodeKey(pubHex)
+	ts, err := vayclient.NewTunnelServer(ns, pubHex)
 	if err != nil {
-		return nil, fmt.Errorf("public key tidak valid: %w", err)
+		return nil, fmt.Errorf("SlowDNS server config: %w", err)
 	}
 
-	dnsHost := strings.TrimSpace(cfg.DNSServer)
-	if dnsHost == "" {
-		dnsHost = "8.8.8.8"
-	}
-	if !strings.Contains(dnsHost, ":") {
-		dnsHost = net.JoinHostPort(dnsHost, "53")
+	dnsMode := strings.ToLower(strings.TrimSpace(cfg.DNSMode))
+	isVaydns := dnsMode == "vaydns"
+	if isVaydns {
+		ts.DnsttCompat = false
+		ts.RecordType = normalizeVaydnsRecordType(cfg.DNSType)
+	} else {
+		dnsMode = "dnstt"
+		ts.DnsttCompat = true
+		ts.RecordType = "txt"
 	}
 
-	remoteAddr, err := net.ResolveUDPAddr("udp", dnsHost)
+	t, err := vayclient.NewTunnel(resolver, ts)
 	if err != nil {
-		return nil, fmt.Errorf("DNS resolver tidak valid (%s): %w", dnsHost, err)
+		return nil, fmt.Errorf("SlowDNS tunnel init: %w", err)
 	}
 
-	mtu := dnsNameCapacity(domain) - 8 - 1 - numPadding - 1
-	if mtu < 80 {
-		return nil, fmt.Errorf("domain %s terlalu panjang (MTU=%d)", ns, mtu)
+	if isVaydns {
+		t.IdleTimeout = vayclient.DefaultIdleTimeout // 10s
+		t.KeepAlive = vayclient.DefaultKeepAlive     // 2s
+	} else {
+		t.IdleTimeout = vayclient.DnsttIdleTimeout   // 2m
+		t.KeepAlive = vayclient.DnsttKeepAlive       // 10s
 	}
 
-	lc := net.ListenConfig{
-		Control: func(network, address string, c syscall.RawConn) error {
-			if protector == nil {
-				return nil
-			}
-			var protectErr error
-			if err := c.Control(func(fd uintptr) {
-				if !protector.Protect(int32(fd)) {
-					protectErr = fmt.Errorf("gagal protect UDP socket fd=%d", fd)
-				}
-			}); err != nil {
-				return err
-			}
-			return protectErr
-		},
+	logMsg("INFO", "SlowDNS (%s/%s) dialing %s via %s (type=%s)", dnsMode, resolver.ResolverType, ns, resolvedAddr, ts.RecordType)
+
+	if err := t.InitiateResolverConnection(); err != nil {
+		_ = t.Close()
+		return nil, fmt.Errorf("SlowDNS resolver connect: %w", err)
 	}
-
-	udpConn, err := lc.ListenPacket(ctx, "udp", ":0")
-	if err != nil {
-		return nil, fmt.Errorf("buka UDP socket SlowDNS: %w", err)
+	if err := t.InitiateDNSPacketConn(ts.Addr); err != nil {
+		_ = t.Close()
+		return nil, fmt.Errorf("SlowDNS DNS packet conn: %w", err)
 	}
-
-	rrType, rrLabel := parseSlowDNSType(cfg.DNSType)
-	logMsg("INFO", "SlowDNS (dnstt) dialing %s via DNS %s (Type=%s, MTU=%d)", ns, dnsHost, rrLabel, mtu)
-	pconn := NewDNSPacketConn(udpConn, remoteAddr, domain, rrType)
-
-	kcpConn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
-	if err != nil {
-		_ = pconn.Close()
-		_ = udpConn.Close()
+	if err := t.InitiateKCPConn(ts.MTU); err != nil {
+		_ = t.Close()
 		return nil, fmt.Errorf("SlowDNS KCP init: %w", err)
 	}
-	kcpConn.SetStreamMode(true)
-	kcpConn.SetNoDelay(0, 0, 0, 1)
-	kcpConn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
-	kcpConn.SetMtu(mtu)
-
-	rw, err := noise.NewClient(kcpConn, pubkey)
-	if err != nil {
-		_ = kcpConn.Close()
-		_ = pconn.Close()
-		_ = udpConn.Close()
+	if err := t.InitiateNoiseChannel(); err != nil {
+		_ = t.Close()
 		return nil, fmt.Errorf("SlowDNS Noise handshake: %w", err)
 	}
-
-	smuxCfg := smux.DefaultConfig()
-	smuxCfg.Version = 2
-	smuxCfg.KeepAliveTimeout = 2 * time.Minute
-	smuxCfg.MaxStreamBuffer = 1 * 1024 * 1024
-
-	sess, err := smux.Client(rw, smuxCfg)
-	if err != nil {
-		_ = kcpConn.Close()
-		_ = pconn.Close()
-		_ = udpConn.Close()
-		return nil, fmt.Errorf("SlowDNS smux init: %w", err)
+	if err := t.InitiateSmuxSession(); err != nil {
+		_ = t.Close()
+		return nil, fmt.Errorf("SlowDNS smux session: %w", err)
 	}
 
-	stream, err := sess.OpenStream()
+	stream, err := t.OpenStream()
 	if err != nil {
-		_ = sess.Close()
-		_ = kcpConn.Close()
-		_ = pconn.Close()
-		_ = udpConn.Close()
+		_ = t.Close()
 		return nil, fmt.Errorf("SlowDNS open stream: %w", err)
 	}
 
-	return &slowDNSConn{
-		Stream:  stream,
-		sess:    sess,
-		kcpConn: kcpConn,
-		pconn:   pconn,
-		udpConn: udpConn,
-	}, nil
+	_ = ctx
+	return &vaydnsConn{Conn: stream, tunnel: t}, nil
 }
