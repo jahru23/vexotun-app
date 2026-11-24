@@ -136,6 +136,7 @@ class VexotunVpnService : VpnService() {
                     ""
                 }
 
+                val underlyingDns = detectUnderlyingDnsServers(this@VexotunVpnService)
                 val coreConfig = CoreTunnelConfig(
                     mode = if (profile.mode == TunnelMode.SSH) "ssh" else "xray",
                     mtu = config.mtu.coerceIn(1280, 1500),
@@ -144,7 +145,7 @@ class VexotunVpnService : VpnService() {
                     allowLan = config.allowLan,
                     ssh = CoreSshPayload(
                         host = profile.ssh.host.trim(),
-                        port = if (profile.ssh.port > 0) profile.ssh.port else 22,
+                        port = if (profile.ssh.port > 0) profile.ssh.port else if (profile.ssh.transport == com.vexotun.app.model.SshTransport.SLOWDNS) 443 else 22,
                         username = profile.ssh.username,
                         password = profile.ssh.password,
                         privateKey = profile.ssh.privateKey,
@@ -155,7 +156,8 @@ class VexotunVpnService : VpnService() {
                         payload = profile.ssh.payload,
                         wsPath = profile.ssh.wsPath.trim(),
                         wsHost = profile.ssh.wsHost.trim(),
-                        dnsServer = profile.ssh.dnsServer.trim().ifBlank { "8.8.8.8" },
+                        dnsServer = profile.ssh.dnsServer.trim().ifBlank { "Auto" },
+                        fallbackDns = underlyingDns,
                         dnsType = profile.ssh.dnsType.wireValue,
                         nameserver = profile.ssh.nameserver.trim(),
                         publicKey = profile.ssh.publicKey.trim()
@@ -471,6 +473,39 @@ class VexotunVpnService : VpnService() {
             } else {
                 context.startService(intent)
             }
+        }
+
+        fun detectUnderlyingDnsServers(context: Context): String {
+            val cm = context.getSystemService(ConnectivityManager::class.java) ?: return ""
+            val v4 = LinkedHashSet<String>()
+            val v6 = LinkedHashSet<String>()
+            val sortedNetworks = cm.allNetworks.sortedByDescending { net ->
+                val caps = cm.getNetworkCapabilities(net)
+                when {
+                    caps == null -> 0
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 2
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 1
+                    else -> 0
+                }
+            }
+            for (network in sortedNetworks) {
+                val caps = cm.getNetworkCapabilities(network) ?: continue
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                    !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                ) {
+                    continue
+                }
+                val lp = cm.getLinkProperties(network) ?: continue
+                for (addr in lp.dnsAddresses) {
+                    val host = (addr.hostAddress ?: continue).substringBefore('%')
+                    if (addr is java.net.Inet4Address) {
+                        v4.add("$host:53")
+                    } else if (addr is java.net.Inet6Address) {
+                        v6.add("[$host]:53")
+                    }
+                }
+            }
+            return (v4 + v6).joinToString(",")
         }
 
         fun stop(context: Context) {

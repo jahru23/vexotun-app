@@ -21,13 +21,18 @@ enum class SshTransport(val wireValue: String, val label: String) {
 
 @Serializable
 enum class SlowDnsRecordType(val wireValue: String, val label: String) {
-    AUTO("AUTO", "Otomatis"),
+    AUTO("AUTO", "Otomatis (VexDNS Multi-Kartu)"),
+    HTTPS("HTTPS", "HTTPS (65)"),
+    SVCB("SVCB", "SVCB (64)"),
     TXT("TXT", "TXT"),
-    NULL("NULL", "NULL"),
+    AAAA("AAAA", "AAAA (IPv6)"),
+    A("A", "A (IPv4)"),
+    CAA("CAA", "CAA"),
     CNAME("CNAME", "CNAME"),
+    MX("MX", "MX"),
     NS("NS", "NS"),
-    A("A", "A"),
-    MX("MX", "MX")
+    NULL("NULL", "NULL"),
+    SRV("SRV", "SRV")
 }
 
 @Serializable
@@ -67,8 +72,8 @@ data class SshProfile(
     val payload: String = "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]",
     val wsPath: String = "/",
     val wsHost: String = "",
-    val dnsServer: String = "8.8.8.8",
-    val dnsType: SlowDnsRecordType = SlowDnsRecordType.TXT,
+    val dnsServer: String = "Auto",
+    val dnsType: SlowDnsRecordType = SlowDnsRecordType.AUTO,
     val nameserver: String = "",
     val publicKey: String = ""
 )
@@ -180,8 +185,9 @@ data class CoreSshPayload(
     val payload: String,
     val wsPath: String,
     val wsHost: String,
-    val dnsServer: String = "8.8.8.8",
-    val dnsType: String = "TXT",
+    val dnsServer: String = "Auto",
+    val fallbackDns: String = "",
+    val dnsType: String = "AUTO",
     val nameserver: String = "",
     val publicKey: String = ""
 )

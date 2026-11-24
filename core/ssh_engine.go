@@ -37,10 +37,11 @@ type SSHConfig struct {
 	Payload    string `json:"payload"`
 	WSPath     string `json:"wsPath"`
 	WSHost     string `json:"wsHost"`
-	DNSServer  string `json:"dnsServer"`
-	DNSType    string `json:"dnsType"`
-	Nameserver string `json:"nameserver"`
-	PublicKey  string `json:"publicKey"`
+	DNSServer   string `json:"dnsServer"`
+	FallbackDNS string `json:"fallbackDns"`
+	DNSType     string `json:"dnsType"`
+	Nameserver  string `json:"nameserver"`
+	PublicKey   string `json:"publicKey"`
 }
 
 type sshEngine struct {

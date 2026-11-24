@@ -138,6 +138,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.vexotun.app.model.CoreSshPayload
 import com.vexotun.app.model.LinkExporter
 import com.vexotun.app.model.SlowDnsRecordType
 import com.vexotun.app.model.SplitTunnelMode
@@ -151,15 +152,22 @@ import com.vexotun.app.model.XrayProtocol
 import com.vexotun.app.model.XrayTransport
 import com.vexotun.app.vpn.ConnectionStatus
 import com.vexotun.app.vpn.TrafficStatsState
+import com.vexotun.app.vpn.VexotunVpnService
 import com.vexotun.app.vpn.VpnRuntimeState
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import core.Core
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.text.SimpleDateFormat
@@ -2147,14 +2155,37 @@ private fun XrayProfileEditor(
     }
 }
 
+@Serializable
+private data class SlowDnsScanCandidateUi(
+    val resolver: String = "",
+    val qtype: String = "",
+    val mtu: Int = 0,
+    val payloadBytes: Int = 0,
+    val queryCap: Int = 0,
+    val rttMs: Long = 0
+)
+
+@Serializable
+private data class SlowDnsScanResponseUi(
+    val ok: Boolean = false,
+    val candidates: List<SlowDnsScanCandidateUi> = emptyList(),
+    val error: String = ""
+)
+
+private val scanJson = Json { ignoreUnknownKeys = true }
+
 @Composable
 private fun SshProfileEditor(
     profile: TunnelProfile,
     onUpdateProfile: ((TunnelProfile) -> TunnelProfile) -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val s = profile.ssh
     var showAdvanced by rememberSaveable { mutableStateOf(false) }
+    var isScanningDns by remember { mutableStateOf(false) }
+    var scanCandidates by remember { mutableStateOf<List<SlowDnsScanCandidateUi>>(emptyList()) }
+    var scanError by remember { mutableStateOf<String?>(null) }
 
     OutlinedButton(
         onClick = {
@@ -2163,12 +2194,16 @@ private fun SshProfileEditor(
             val parsed = parseSshAccountPaste(clip)
             if (parsed != null) {
                 onUpdateProfile { p ->
+                    val isSd = parsed.nameserver.isNotBlank() || parsed.publicKey.isNotBlank()
                     p.copy(
                         ssh = p.ssh.copy(
                             host = parsed.host.ifBlank { p.ssh.host },
                             port = if (parsed.port > 0) parsed.port else p.ssh.port,
                             username = parsed.username.ifBlank { p.ssh.username },
                             password = parsed.password.ifBlank { p.ssh.password },
+                            transport = if (isSd) SshTransport.SLOWDNS else p.ssh.transport,
+                            dnsServer = if (isSd) "Auto" else p.ssh.dnsServer,
+                            dnsType = if (isSd) SlowDnsRecordType.AUTO else p.ssh.dnsType,
                             nameserver = parsed.nameserver.ifBlank { p.ssh.nameserver },
                             publicKey = parsed.publicKey.ifBlank { p.ssh.publicKey }
                         )
@@ -2192,7 +2227,20 @@ private fun SshProfileEditor(
         selectedLabel = s.transport.label,
         options = SshTransport.entries,
         optionLabel = { it.label },
-        onSelect = { t -> onUpdateProfile { it.copy(ssh = it.ssh.copy(transport = t)) } }
+        onSelect = { t ->
+            onUpdateProfile {
+                val cur = it.ssh
+                val switchingToSlowDns = t == SshTransport.SLOWDNS && cur.transport != SshTransport.SLOWDNS
+                it.copy(
+                    ssh = cur.copy(
+                        transport = t,
+                        port = if (switchingToSlowDns && cur.port == 22) 443 else cur.port,
+                        dnsServer = if (switchingToSlowDns && (cur.dnsServer.isBlank() || cur.dnsServer == "8.8.8.8")) "Auto" else cur.dnsServer,
+                        dnsType = if (switchingToSlowDns) SlowDnsRecordType.AUTO else cur.dnsType
+                    )
+                )
+            }
+        }
     )
 
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2205,7 +2253,7 @@ private fun SshProfileEditor(
         )
         NumericTextField(
             value = s.port,
-            defaultValue = 22,
+            defaultValue = if (s.transport == SshTransport.SLOWDNS) 443 else 22,
             onValueChange = { p -> onUpdateProfile { it.copy(ssh = it.ssh.copy(port = p)) } },
             label = "Port",
             modifier = Modifier.weight(1f)
@@ -2241,7 +2289,8 @@ private fun SshProfileEditor(
         OutlinedTextField(
             value = s.dnsServer,
             onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsServer = v.replace("\n", ""))) } },
-            label = { Text("DNS Resolver (mis. 8.8.8.8)") },
+            label = { Text("DNS Resolver (Auto = otomatis kartu)") },
+            placeholder = { Text("Auto") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
@@ -2261,6 +2310,121 @@ private fun SshProfileEditor(
             maxLines = 3,
             modifier = Modifier.fillMaxWidth()
         )
+
+        OutlinedButton(
+            onClick = {
+                if (isScanningDns) return@OutlinedButton
+                isScanningDns = true
+                scanError = null
+                scanCandidates = emptyList()
+                scope.launch {
+                    val underlying = VexotunVpnService.detectUnderlyingDnsServers(context)
+                    val payload = CoreSshPayload(
+                        host = s.host.trim(),
+                        port = if (s.port > 0) s.port else 443,
+                        username = s.username,
+                        password = s.password,
+                        privateKey = s.privateKey,
+                        transport = s.transport.wireValue,
+                        proxyHost = "",
+                        proxyPort = 8080,
+                        sni = "",
+                        payload = "",
+                        wsPath = "",
+                        wsHost = "",
+                        dnsServer = s.dnsServer.trim().ifBlank { "Auto" },
+                        fallbackDns = underlying,
+                        dnsType = "AUTO",
+                        nameserver = s.nameserver.trim(),
+                        publicKey = s.publicKey.trim()
+                    )
+                    val rawJson = withContext(Dispatchers.IO) {
+                        runCatching { Core.scanSlowDNS(scanJson.encodeToString(payload), null) }.getOrElse {
+                            "{\"ok\":false,\"error\":\"${it.message ?: "gagal scan"}\"}"
+                        }
+                    }
+                    val resp = runCatching { scanJson.decodeFromString<SlowDnsScanResponseUi>(rawJson) }
+                        .getOrElse { SlowDnsScanResponseUi(ok = false, error = it.message ?: "Parse gagal") }
+                    isScanningDns = false
+                    if (resp.ok) {
+                        scanCandidates = resp.candidates.take(8)
+                    } else {
+                        scanError = resp.error.ifBlank { "Tidak ada jalur DNS yang merespons" }
+                    }
+                }
+            },
+            enabled = !isScanningDns && s.nameserver.isNotBlank() && s.publicKey.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(if (isScanningDns) "Memindai DNS Kartu..." else "Tes / Scan DNS Kartu (11 QTYPE)")
+        }
+
+        if (scanError != null) {
+            Text(
+                scanError!!,
+                color = MaterialTheme.colorScheme.error,
+                fontSize = 12.sp
+            )
+        }
+        if (scanCandidates.isNotEmpty()) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        "Jalur Tembus (${scanCandidates.size}) — ketuk untuk pakai:",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp
+                    )
+                    scanCandidates.forEachIndexed { idx, cand ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val mapped = SlowDnsRecordType.entries.firstOrNull {
+                                        it.wireValue.equals(cand.qtype, ignoreCase = true)
+                                    } ?: SlowDnsRecordType.AUTO
+                                    onUpdateProfile {
+                                        it.copy(
+                                            ssh = it.ssh.copy(
+                                                dnsServer = cand.resolver,
+                                                dnsType = mapped
+                                            )
+                                        )
+                                    }
+                                    Toast.makeText(
+                                        context,
+                                        "Dipakai: ${cand.qtype} via ${cand.resolver}",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "#${idx + 1} ${cand.qtype} • ${cand.resolver}",
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                "MTU ${cand.mtu} (${cand.rttMs}ms)",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (s.transport == SshTransport.SSL || s.transport == SshTransport.WSS) {
@@ -2808,11 +2972,15 @@ private fun parseSshAccountPaste(raw: String): SshProfile? {
         }
     }
     return if (host.isNotBlank() || user.isNotBlank() || ns.isNotBlank()) {
+        val isSd = ns.isNotBlank() || pubkey.isNotBlank()
         SshProfile(
             host = host,
             port = if (port > 0) port else 443,
             username = user,
             password = pass,
+            transport = if (isSd) SshTransport.SLOWDNS else SshTransport.HTTP_PROXY,
+            dnsServer = if (isSd) "Auto" else "8.8.8.8",
+            dnsType = if (isSd) SlowDnsRecordType.AUTO else SlowDnsRecordType.TXT,
             nameserver = ns,
             publicKey = pubkey
         )
