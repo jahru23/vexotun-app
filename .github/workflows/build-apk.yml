@@ -94,4 +94,4 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" release-apks/*.apk \
             --title "Vexotun ${GITHUB_REF_NAME}" \
             --notes "Release APK 64-bit (arm64-v8a) & 32-bit (armeabi-v7a), signed with consistent release keystore." \
-            --clobber || gh release upload "${GITHUB_REF_NAME}" release-apks/*.apk --clobber
+            || gh release upload "${GITHUB_REF_NAME}" release-apks/*.apk --clobber
