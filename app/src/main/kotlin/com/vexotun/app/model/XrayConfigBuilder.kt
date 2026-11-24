@@ -12,9 +12,10 @@ object XrayConfigBuilder {
     fun buildJson(
         profile: XrayProfile,
         dnsServer: String = "8.8.8.8",
-        bypassLan: Boolean = true
+        bypassLan: Boolean = true,
+        muxEnabled: Boolean = true
     ): String {
-        val outbound = buildOutbound(profile)
+        val outbound = buildOutbound(profile, muxEnabled)
         val effectiveDns = dnsServer.trim().ifBlank { "8.8.8.8" }
         val root = buildJsonObject {
             put("log", buildJsonObject { put("loglevel", "error") })
@@ -57,7 +58,7 @@ object XrayConfigBuilder {
         return root.toString()
     }
 
-    private fun buildOutbound(p: XrayProfile): JsonObject {
+    private fun buildOutbound(p: XrayProfile, muxEnabled: Boolean = true): JsonObject {
         val settings = when (p.protocol) {
             XrayProtocol.VMESS -> buildJsonObject {
                 put("vnext", buildJsonArray {
@@ -168,7 +169,7 @@ object XrayConfigBuilder {
             })
         }
 
-        val useMux = p.flow.isBlank() && p.network != XrayTransport.GRPC
+        val useMux = muxEnabled && p.muxEnabled && p.flow.isBlank() && p.network != XrayTransport.GRPC
         return buildJsonObject {
             put("tag", "proxy")
             put("protocol", p.protocol.wireValue)

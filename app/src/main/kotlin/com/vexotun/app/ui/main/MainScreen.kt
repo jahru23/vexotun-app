@@ -3,11 +3,15 @@ package com.vexotun.app.ui.main
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -19,6 +23,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -62,6 +67,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NetworkPing
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -120,6 +126,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -133,6 +140,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vexotun.app.model.LinkExporter
 import com.vexotun.app.model.SplitTunnelMode
+import com.vexotun.app.model.SshProfile
 import com.vexotun.app.model.SshTransport
 import com.vexotun.app.model.TunnelMode
 import com.vexotun.app.model.TunnelProfile
@@ -143,6 +151,9 @@ import com.vexotun.app.model.XrayTransport
 import com.vexotun.app.vpn.ConnectionStatus
 import com.vexotun.app.vpn.TrafficStatsState
 import com.vexotun.app.vpn.VpnRuntimeState
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
@@ -204,6 +215,7 @@ fun MainScreen(
     var showCreateTypeDialog by remember { mutableStateOf(false) }
     var shareLinkText by remember { mutableStateOf<String?>(null) }
     var exportVxtProfile by remember { mutableStateOf<TunnelProfile?>(null) }
+    var qrExportData by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pendingVxtBytes by remember { mutableStateOf<ByteArray?>(null) }
     var lastBackPressMs by remember { mutableLongStateOf(0L) }
 
@@ -300,6 +312,10 @@ fun MainScreen(
     shareLinkText?.let { link ->
         ShareLinkDialog(
             link = link,
+            onShowQr = {
+                shareLinkText = null
+                qrExportData = "QR Link Config" to link
+            },
             onDismiss = { shareLinkText = null }
         )
     }
@@ -308,13 +324,26 @@ fun MainScreen(
         ExportVxtDialog(
             profile = profile,
             onDismiss = { exportVxtProfile = null },
-            onExport = { lockInfo ->
+            onExportFile = { lockInfo ->
                 val bytes = viewModel.exportVxtBytes(profile, lockInfo)
                 pendingVxtBytes = bytes
                 exportVxtProfile = null
                 val safeName = profile.name.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "vexotun" }
                 vxtExportLauncher.launch("$safeName.vxt")
+            },
+            onExportQr = { lockInfo ->
+                val encoded = viewModel.exportVxtString(profile, lockInfo)
+                exportVxtProfile = null
+                qrExportData = "QR ${profile.name}" to encoded
             }
+        )
+    }
+
+    qrExportData?.let { (title, content) ->
+        QrCodeDialog(
+            title = title,
+            content = content,
+            onDismiss = { qrExportData = null }
         )
     }
 
@@ -484,8 +513,10 @@ fun MainScreen(
                         SplitTunnelPage(
                             config = config,
                             apps = apps,
+                            isVpnConnected = runtime.status == ConnectionStatus.CONNECTED,
                             onSplitModeChange = viewModel::setSplitMode,
-                            onTogglePackage = viewModel::toggleSplitPackage
+                            onTogglePackage = viewModel::toggleSplitPackage,
+                            onReconnectVpn = viewModel::reconnectVpn
                         )
                     }
                     AppPage.SETTINGS -> SettingsPage(
@@ -771,6 +802,7 @@ private fun ImportLinkDialog(
 @Composable
 private fun ShareLinkDialog(
     link: String,
+    onShowQr: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -809,6 +841,9 @@ private fun ShareLinkDialog(
         },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onShowQr) {
+                    Text("QR Code")
+                }
                 TextButton(onClick = {
                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     cm.setPrimaryClip(ClipData.newPlainText("vexotun_link", link))
@@ -829,7 +864,8 @@ private fun ShareLinkDialog(
 private fun ExportVxtDialog(
     profile: TunnelProfile,
     onDismiss: () -> Unit,
-    onExport: (VxtLockInfo) -> Unit
+    onExportFile: (VxtLockInfo) -> Unit,
+    onExportQr: (VxtLockInfo) -> Unit
 ) {
     var lockConfig by remember { mutableStateOf(true) }
     var hideHost by remember { mutableStateOf(true) }
@@ -840,9 +876,25 @@ private fun ExportVxtDialog(
     var note by remember { mutableStateOf("") }
     var expiryDays by remember { mutableStateOf(0) } // 0 = unlimited
 
+    fun buildLockInfo(): VxtLockInfo {
+        val expiresAt = if (expiryDays > 0) {
+            System.currentTimeMillis() + expiryDays * 24L * 60L * 60L * 1000L
+        } else 0L
+        return VxtLockInfo(
+            locked = lockConfig,
+            hideHost = lockConfig && hideHost,
+            hideSni = lockConfig && hideSni,
+            hideAuth = lockConfig && hideAuth,
+            hidePayload = lockConfig && hidePayload,
+            author = author.trim(),
+            note = note.trim(),
+            expiresAtMs = expiresAt
+        )
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Export File .vxt") },
+        title = { Text("Export Config .vxt") },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -909,32 +961,126 @@ private fun ExportVxtDialog(
             }
         },
         confirmButton = {
-            Button(onClick = {
-                val expiresAt = if (expiryDays > 0) {
-                    System.currentTimeMillis() + expiryDays * 24L * 60L * 60L * 1000L
-                } else 0L
-                onExport(
-                    VxtLockInfo(
-                        locked = lockConfig,
-                        hideHost = lockConfig && hideHost,
-                        hideSni = lockConfig && hideSni,
-                        hideAuth = lockConfig && hideAuth,
-                        hidePayload = lockConfig && hidePayload,
-                        author = author.trim(),
-                        note = note.trim(),
-                        expiresAtMs = expiresAt
-                    )
-                )
-            }) {
+            Button(onClick = { onExportFile(buildLockInfo()) }) {
                 Text("Simpan .vxt")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Batal")
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = { onExportQr(buildLockInfo()) }) {
+                    Text("Buat QR")
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Batal")
+                }
             }
         }
     )
+}
+
+@Composable
+private fun QrCodeDialog(
+    title: String,
+    content: String,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val qrBitmap = remember(content) { generateQrBitmap(content, 640) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (qrBitmap != null) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color.White
+                    ) {
+                        Image(
+                            bitmap = qrBitmap.asImageBitmap(),
+                            contentDescription = "QR Code",
+                            modifier = Modifier
+                                .size(240.dp)
+                                .padding(12.dp)
+                        )
+                    }
+                    Text(
+                        "Pindai QR ini dari menu Import di Vexotun lain.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                } else {
+                    Text("Gagal membuat QR Code.", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            if (qrBitmap != null) {
+                Button(onClick = {
+                    val saved = saveBitmapToGallery(context, qrBitmap, "vexotun_qr_${System.currentTimeMillis()}.png")
+                    Toast.makeText(
+                        context,
+                        if (saved) "QR disimpan ke Galeri (Pictures/Vexotun)" else "Gagal menyimpan QR",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }) {
+                    Text("Simpan ke Galeri")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Tutup")
+            }
+        }
+    )
+}
+
+private fun generateQrBitmap(text: String, sizePx: Int): Bitmap? {
+    return runCatching {
+        val hints = mapOf(
+            EncodeHintType.MARGIN to 1,
+            EncodeHintType.CHARACTER_SET to "UTF-8"
+        )
+        val matrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
+        val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        for (x in 0 until sizePx) {
+            for (y in 0 until sizePx) {
+                bmp.setPixel(x, y, if (matrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+            }
+        }
+        bmp
+    }.getOrNull()
+}
+
+private fun saveBitmapToGallery(context: Context, bitmap: Bitmap, displayName: String): Boolean {
+    return runCatching {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Vexotun")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return false
+        resolver.openOutputStream(uri)?.use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            values.clear()
+            values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+        }
+        true
+    }.getOrDefault(false)
 }
 
 @Composable
@@ -1895,9 +2041,9 @@ private fun XrayProfileEditor(
         modifier = Modifier.fillMaxWidth()
     )
 
-    Card(
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
             Row(
@@ -1934,7 +2080,94 @@ private fun XrayProfileEditor(
                     )
                 }
             }
+
+            if (x.flow.isBlank() && x.network != XrayTransport.GRPC) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Xray Mux (Multi-koneksi)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = x.muxEnabled,
+                        onCheckedChange = { checked ->
+                            onUpdateProfile { it.copy(xray = it.xray.copy(muxEnabled = checked)) }
+                        }
+                    )
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Gunakan payload dan proxy kustom",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = x.useCustomPayload,
+                    onCheckedChange = { checked ->
+                        onUpdateProfile { it.copy(xray = it.xray.copy(useCustomPayload = checked)) }
+                    }
+                )
+            }
         }
+    }
+
+    if (x.useCustomPayload) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = x.proxyHost,
+                onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(proxyHost = v.replace("\n", ""))) } },
+                label = { Text("Proxy Host (Opsional)") },
+                singleLine = true,
+                modifier = Modifier.weight(2f)
+            )
+            OutlinedTextField(
+                value = x.proxyPort.toString(),
+                onValueChange = { v ->
+                    val p = v.filter(Char::isDigit).toIntOrNull() ?: 8080
+                    onUpdateProfile { it.copy(xray = it.xray.copy(proxyPort = p)) }
+                },
+                label = { Text("Port") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        val tags = listOf("[crlf]", "[host]", "[host_port]", "[split]", "[delay_split]", "[ua]", "[protocol]")
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            tags.forEach { tag ->
+                SuggestionChip(
+                    onClick = {
+                        onUpdateProfile { it.copy(xray = it.xray.copy(payload = it.xray.payload + tag)) }
+                    },
+                    label = { Text(tag, fontSize = 11.sp) }
+                )
+            }
+        }
+        OutlinedTextField(
+            value = x.payload,
+            onValueChange = { v -> onUpdateProfile { it.copy(xray = it.xray.copy(payload = v)) } },
+            label = { Text("Payload Xray") },
+            minLines = 3,
+            maxLines = 6,
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
@@ -1943,8 +2176,38 @@ private fun SshProfileEditor(
     profile: TunnelProfile,
     onUpdateProfile: ((TunnelProfile) -> TunnelProfile) -> Unit
 ) {
+    val context = LocalContext.current
     val s = profile.ssh
     var showAdvanced by rememberSaveable { mutableStateOf(false) }
+
+    OutlinedButton(
+        onClick = {
+            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+            val parsed = parseSshAccountPaste(clip)
+            if (parsed != null) {
+                onUpdateProfile { p ->
+                    p.copy(
+                        ssh = p.ssh.copy(
+                            host = parsed.host.ifBlank { p.ssh.host },
+                            port = if (parsed.port > 0) parsed.port else p.ssh.port,
+                            username = parsed.username.ifBlank { p.ssh.username },
+                            password = parsed.password.ifBlank { p.ssh.password }
+                        )
+                    )
+                }
+                Toast.makeText(context, "Akun SSH ditempel", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Format akun SSH di clipboard tidak dikenali", Toast.LENGTH_SHORT).show()
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("Tempel Akun SSH")
+    }
 
     CompactDropdown(
         label = "Transport",
@@ -2102,16 +2365,22 @@ private fun SshProfileEditor(
 private fun SplitTunnelPage(
     config: VexotunConfig,
     apps: List<InstalledApp>,
+    isVpnConnected: Boolean,
     onSplitModeChange: (SplitTunnelMode) -> Unit,
-    onTogglePackage: (String) -> Unit
+    onTogglePackage: (String) -> Unit,
+    onReconnectVpn: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
+    var showSystemApps by remember { mutableStateOf(false) }
+    var needsReconnect by remember { mutableStateOf(false) }
     val selectedSet = remember(config.splitPackages) { config.splitPackages.toHashSet() }
-    val filtered = remember(apps, query) {
-        if (query.isBlank()) apps
-        else apps.filter {
-            it.label.contains(query, ignoreCase = true) ||
-                it.packageName.contains(query, ignoreCase = true)
+    val filtered = remember(apps, query, showSystemApps, selectedSet) {
+        apps.filter { app ->
+            val visibleByType = showSystemApps || app.isLauncher || (app.packageName in selectedSet)
+            val matchesQuery = query.isBlank() ||
+                app.label.contains(query, ignoreCase = true) ||
+                app.packageName.contains(query, ignoreCase = true)
+            visibleByType && matchesQuery
         }
     }
 
@@ -2121,6 +2390,40 @@ private fun SplitTunnelPage(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        if (needsReconnect && isVpnConnected) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Filter berubah. Sambung ulang agar berlaku.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            needsReconnect = false
+                            onReconnectVpn()
+                        },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.height(34.dp)
+                    ) {
+                        Text("Sambung Ulang", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
         val splitModes = listOf(
             SplitTunnelMode.ALL_APPS to "Semua",
             SplitTunnelMode.INCLUDE_ONLY to "Dipilih",
@@ -2130,7 +2433,10 @@ private fun SplitTunnelPage(
             splitModes.forEachIndexed { index, (mode, label) ->
                 SegmentedButton(
                     selected = config.splitMode == mode,
-                    onClick = { onSplitModeChange(mode) },
+                    onClick = {
+                        onSplitModeChange(mode)
+                        if (isVpnConnected) needsReconnect = true
+                    },
                     shape = SegmentedButtonDefaults.itemShape(index, splitModes.size)
                 ) {
                     Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2147,6 +2453,18 @@ private fun SplitTunnelPage(
                 modifier = Modifier.fillMaxWidth()
             )
 
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showSystemApps = !showSystemApps }
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(checked = showSystemApps, onCheckedChange = { showSystemApps = it })
+                Spacer(Modifier.width(6.dp))
+                Text("Tampilkan aplikasi sistem", style = MaterialTheme.typography.bodySmall)
+            }
+
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -2157,11 +2475,20 @@ private fun SplitTunnelPage(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
-                            .clickable { onTogglePackage(app.packageName) }
+                            .clickable {
+                                onTogglePackage(app.packageName)
+                                if (isVpnConnected) needsReconnect = true
+                            }
                             .padding(vertical = 6.dp, horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Checkbox(checked = checked, onCheckedChange = { onTogglePackage(app.packageName) })
+                        Checkbox(
+                            checked = checked,
+                            onCheckedChange = {
+                                onTogglePackage(app.packageName)
+                                if (isVpnConnected) needsReconnect = true
+                            }
+                        )
                         Spacer(Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -2435,6 +2762,52 @@ private fun SettingsSwitchRow(
             checked = checked,
             onCheckedChange = onCheckedChange
         )
+    }
+}
+
+private fun parseSshAccountPaste(raw: String): SshProfile? {
+    val text = raw.trim()
+    if (text.isBlank()) return null
+
+    // 1) host:port@user:pass or ssh://user:pass@host:port
+    val clean = text.removePrefix("ssh://").trim()
+    if (clean.contains("@") && !clean.contains("\n")) {
+        val parts = clean.split("@", limit = 2)
+        val left = parts[0].split(":", limit = 2)
+        val right = parts[1].split(":", limit = 2)
+        if (left.size == 2 && right.size == 2) {
+            val leftPort = left[1].toIntOrNull()
+            val rightPort = right[1].toIntOrNull()
+            return if (leftPort != null) {
+                SshProfile(host = left[0].trim(), port = leftPort, username = right[0].trim(), password = right[1].trim())
+            } else if (rightPort != null) {
+                SshProfile(host = right[0].trim(), port = rightPort, username = left[0].trim(), password = left[1].trim())
+            } else null
+        }
+    }
+
+    // 2) Multi-line key: value format from VPS panels
+    var host = ""
+    var port = 0
+    var user = ""
+    var pass = ""
+    text.lines().forEach { line ->
+        val idx = line.indexOf(':')
+        if (idx > 0) {
+            val key = line.substring(0, idx).trim().lowercase()
+            val value = line.substring(idx + 1).trim()
+            when {
+                key in listOf("host", "server", "ip", "domain", "address") -> if (host.isBlank()) host = value
+                key == "port" -> if (port == 0) port = value.filter(Char::isDigit).toIntOrNull() ?: 0
+                key in listOf("user", "username") -> if (user.isBlank()) user = value
+                key in listOf("pass", "password", "sandi") -> if (pass.isBlank()) pass = value
+            }
+        }
+    }
+    return if (host.isNotBlank() || user.isNotBlank()) {
+        SshProfile(host = host, port = if (port > 0) port else 443, username = user, password = pass)
+    } else {
+        null
     }
 }
 

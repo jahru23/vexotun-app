@@ -160,6 +160,10 @@ func (p *localHTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *localHTTPProxy) dialViaSocks5(target string) (net.Conn, error) {
+	return dialViaSocks5Addr(p.socksAddr, target)
+}
+
+func dialViaSocks5Addr(socksAddr string, target string) (net.Conn, error) {
 	host, portStr, err := net.SplitHostPort(target)
 	if err != nil {
 		return nil, err
@@ -169,7 +173,7 @@ func (p *localHTTPProxy) dialViaSocks5(target string) (net.Conn, error) {
 		return nil, fmt.Errorf("invalid port: %s", portStr)
 	}
 
-	conn, err := net.DialTimeout("tcp", p.socksAddr, 10*time.Second)
+	conn, err := net.DialTimeout("tcp", socksAddr, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}

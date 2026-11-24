@@ -15,13 +15,14 @@ import (
 )
 
 type TunnelConfig struct {
-	Mode           string    `json:"mode"` // "ssh" or "xray"
-	MTU            int       `json:"mtu"`
-	SocksPort      int       `json:"socksPort"`
-	HTTPPort       int       `json:"httpPort"`
-	AllowLan       bool      `json:"allowLan"`
-	SSH            SSHConfig `json:"ssh"`
-	XrayConfigJSON string    `json:"xrayConfigJson"`
+	Mode           string            `json:"mode"` // "ssh" or "xray"
+	MTU            int               `json:"mtu"`
+	SocksPort      int               `json:"socksPort"`
+	HTTPPort       int               `json:"httpPort"`
+	AllowLan       bool              `json:"allowLan"`
+	SSH            SSHConfig         `json:"ssh"`
+	XrayConfigJSON string            `json:"xrayConfigJson"`
+	XrayPayload    XrayPayloadConfig `json:"xrayPayload"`
 }
 
 type TunnelStats struct {
@@ -35,6 +36,7 @@ var (
 	isRunning       bool
 	activeSSH       *sshEngine
 	activeXray      *xrayEngine
+	activeXrayBridge *xrayPayloadBridge
 	activeHTTPProxy *localHTTPProxy
 	activeSocks     int
 )
@@ -84,8 +86,26 @@ func Start(tunFd int32, configJSON string, protector SocketProtector, logger Log
 		activeSSH = sshEng
 
 	case "xray":
-		xrayEng, err := startXrayEngine(cfg.XrayConfigJSON, listenHost, cfg.SocksPort, protector)
+		xrayJSON := cfg.XrayConfigJSON
+		if cfg.XrayPayload.Enabled {
+			bridge, err := startXrayPayloadBridge(context.Background(), cfg.XrayPayload, protector)
+			if err != nil {
+				return err
+			}
+			rewritten, err := rewriteXrayOutboundEndpoint(xrayJSON, bridge.port)
+			if err != nil {
+				bridge.Stop()
+				return err
+			}
+			activeXrayBridge = bridge
+			xrayJSON = rewritten
+		}
+		xrayEng, err := startXrayEngine(xrayJSON, listenHost, cfg.SocksPort, protector)
 		if err != nil {
+			if activeXrayBridge != nil {
+				activeXrayBridge.Stop()
+				activeXrayBridge = nil
+			}
 			return err
 		}
 		activeXray = xrayEng
@@ -142,6 +162,10 @@ func Stop() {
 		activeXray.Stop()
 		activeXray = nil
 	}
+	if activeXrayBridge != nil {
+		activeXrayBridge.Stop()
+		activeXrayBridge = nil
+	}
 
 	activeSocks = 0
 	isRunning = false
@@ -191,6 +215,37 @@ func PingHTTP(targetURL string, timeoutMs int32) int32 {
 	}
 	client := &http.Client{
 		Timeout: time.Duration(timeoutMs) * time.Millisecond,
+	}
+	start := time.Now()
+	resp, err := client.Head(targetURL)
+	if err != nil {
+		return -1
+	}
+	_ = resp.Body.Close()
+	return int32(time.Since(start).Milliseconds())
+}
+
+// PingSocksHTTP probes an HTTP URL through the local SOCKS5 proxy (127.0.0.1:<socksPort>)
+// to verify tunnel connectivity (e.g. for Xray Mux auto-fallback). Returns latency in ms or -1.
+func PingSocksHTTP(socksPort int32, targetURL string, timeoutMs int32) int32 {
+	if socksPort <= 0 {
+		socksPort = 10808
+	}
+	if timeoutMs <= 0 {
+		timeoutMs = 3500
+	}
+	socksAddr := fmt.Sprintf("127.0.0.1:%d", socksPort)
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialViaSocks5Addr(socksAddr, addr)
+		},
+		DisableKeepAlives: true,
+	}
+	defer transport.CloseIdleConnections()
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   time.Duration(timeoutMs) * time.Millisecond,
 	}
 	start := time.Now()
 	resp, err := client.Head(targetURL)

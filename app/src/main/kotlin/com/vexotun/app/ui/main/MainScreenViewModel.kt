@@ -32,6 +32,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,7 +46,8 @@ import org.json.JSONObject
 data class InstalledApp(
     val packageName: String,
     val label: String,
-    val isSystem: Boolean
+    val isSystem: Boolean,
+    val isLauncher: Boolean
 )
 
 class MainScreenViewModel(application: Application) : AndroidViewModel(application) {
@@ -180,6 +182,19 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun importFromLinks(rawInput: String): Result<Int> {
+        val trimmed = rawInput.trim()
+        if (trimmed.startsWith("VXT1:")) {
+            return VxtCodec.decode(trimmed.toByteArray(Charsets.UTF_8)).map { imported ->
+                updateConfig { cfg ->
+                    cfg.copy(
+                        profiles = cfg.profiles + imported,
+                        activeProfileId = imported.id
+                    )
+                }
+                TunnelState.appendLog("INFO", "Config .vxt diimpor: ${imported.name}")
+                1
+            }
+        }
         val result = LinkParser.parseShareLinks(rawInput)
         return result.map { imported ->
             updateConfig { cfg ->
@@ -233,6 +248,9 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     fun exportVxtBytes(profile: TunnelProfile, lockInfo: VxtLockInfo): ByteArray =
         VxtCodec.encode(profile, lockInfo)
+
+    fun exportVxtString(profile: TunnelProfile, lockInfo: VxtLockInfo): String =
+        VxtCodec.encode(profile, lockInfo).toString(Charsets.UTF_8)
 
     fun runBatchPingCheck() {
         val profiles = _config.value.profiles
@@ -332,6 +350,14 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         VexotunVpnService.stop(getApplication())
     }
 
+    fun reconnectVpn() {
+        viewModelScope.launch {
+            stopVpn()
+            delay(650L)
+            startVpn()
+        }
+    }
+
     fun clearLogs() {
         TunnelState.clearLogs()
     }
@@ -379,13 +405,19 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                     val label = runCatching { pm.getApplicationLabel(info).toString() }
                         .getOrElse { info.packageName }
                     val isSys = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                    val isLauncher = pm.getLaunchIntentForPackage(info.packageName) != null
                     InstalledApp(
                         packageName = info.packageName,
                         label = label,
-                        isSystem = isSys
+                        isSystem = isSys,
+                        isLauncher = isLauncher
                     )
                 }
-                .sortedWith(compareBy<InstalledApp> { it.isSystem }.thenBy { it.label.lowercase() })
+                .sortedWith(
+                    compareByDescending<InstalledApp> { it.isLauncher }
+                        .thenBy { it.isSystem }
+                        .thenBy { it.label.lowercase() }
+                )
             _apps.value = installed
         }
     }

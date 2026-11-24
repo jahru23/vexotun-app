@@ -22,10 +22,12 @@ import com.vexotun.app.data.ConfigStore
 import com.vexotun.app.model.CoreSshPayload
 import com.vexotun.app.model.CoreStats
 import com.vexotun.app.model.CoreTunnelConfig
+import com.vexotun.app.model.CoreXrayPayload
 import com.vexotun.app.model.SplitTunnelMode
 import com.vexotun.app.model.TunnelMode
 import com.vexotun.app.model.VexotunConfig
 import com.vexotun.app.model.XrayConfigBuilder
+import com.vexotun.app.model.XrayTransport
 import core.Core
 import core.LogHandler
 import core.SocketProtector
@@ -115,11 +117,31 @@ class VexotunVpnService : VpnService() {
                     ?: throw IllegalStateException("Gagal membuat interface VPN")
                 TunnelState.appendLog("INFO", "VPN siap.")
 
+                val xrayPayload = if (profile.mode == TunnelMode.XRAY && profile.xray.useCustomPayload) {
+                    CoreXrayPayload(
+                        enabled = true,
+                        targetHost = profile.xray.address.trim(),
+                        targetPort = profile.xray.port,
+                        proxyHost = profile.xray.proxyHost.trim(),
+                        proxyPort = profile.xray.proxyPort,
+                        payload = profile.xray.payload,
+                        sni = profile.xray.sni.trim().ifBlank { profile.xray.host.trim() }
+                    )
+                } else {
+                    CoreXrayPayload()
+                }
+
+                val canUseMux = profile.mode == TunnelMode.XRAY &&
+                    profile.xray.muxEnabled &&
+                    profile.xray.flow.isBlank() &&
+                    profile.xray.network != XrayTransport.GRPC
+
                 val xrayJson = if (profile.mode == TunnelMode.XRAY) {
                     XrayConfigBuilder.buildJson(
                         profile = profile.xray,
                         dnsServer = config.dnsServer,
-                        bypassLan = config.bypassLan
+                        bypassLan = config.bypassLan,
+                        muxEnabled = canUseMux
                     )
                 } else {
                     ""
@@ -145,7 +167,8 @@ class VexotunVpnService : VpnService() {
                         wsPath = profile.ssh.wsPath.trim(),
                         wsHost = profile.ssh.wsHost.trim()
                     ),
-                    xrayConfigJson = xrayJson
+                    xrayConfigJson = xrayJson,
+                    xrayPayload = xrayPayload
                 )
 
                 val protector = SocketProtector { fd -> protect(fd) }
@@ -160,6 +183,27 @@ class VexotunVpnService : VpnService() {
                 TunnelState.appendLog("INFO", "Memulai ${profile.mode.label}.")
                 Core.start(detachedFd, json.encodeToString(coreConfig), protector, logger)
                 detachedFd = -1
+
+                if (canUseMux) {
+                    val muxProbe = Core.pingSocksHTTP(config.socksPort, "https://www.gstatic.com/generate_204", 3500)
+                    if (muxProbe < 0 && !isStopping) {
+                        TunnelState.appendLog("WARN", "Server menolak Mux, beralih otomatis ke mode tanpa Mux...")
+                        runCatching { Core.stop() }
+                        val fallbackPfd = builder.establish()
+                            ?: throw IllegalStateException("Gagal membuat ulang interface VPN")
+                        detachedFd = fallbackPfd.detachFd()
+                        val fallbackJson = XrayConfigBuilder.buildJson(
+                            profile = profile.xray,
+                            dnsServer = config.dnsServer,
+                            bypassLan = config.bypassLan,
+                            muxEnabled = false
+                        )
+                        Core.start(detachedFd, json.encodeToString(coreConfig.copy(xrayConfigJson = fallbackJson)), protector, logger)
+                        detachedFd = -1
+                    } else if (muxProbe >= 0) {
+                        TunnelState.appendLog("INFO", "Xray Mux aktif (${muxProbe} ms).")
+                    }
+                }
 
                 TunnelState.appendLog("INFO", "Engine aktif.")
                 TunnelState.appendLog("INFO", "Rute VPN aktif.")

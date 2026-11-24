@@ -71,7 +71,12 @@ data class XrayProfile(
     val sni: String = "",
     val host: String = "",
     val path: String = "",
-    val allowInsecure: Boolean = false
+    val allowInsecure: Boolean = false,
+    val useCustomPayload: Boolean = false,
+    val proxyHost: String = "",
+    val proxyPort: Int = 8080,
+    val payload: String = "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]",
+    val muxEnabled: Boolean = true
 )
 
 @Serializable
@@ -160,6 +165,17 @@ data class CoreSshPayload(
 )
 
 @Serializable
+data class CoreXrayPayload(
+    val enabled: Boolean = false,
+    val targetHost: String = "",
+    val targetPort: Int = 443,
+    val proxyHost: String = "",
+    val proxyPort: Int = 8080,
+    val payload: String = "",
+    val sni: String = ""
+)
+
+@Serializable
 data class CoreTunnelConfig(
     val mode: String,
     val mtu: Int,
@@ -167,7 +183,8 @@ data class CoreTunnelConfig(
     val httpPort: Int = 10809,
     val allowLan: Boolean = false,
     val ssh: CoreSshPayload,
-    val xrayConfigJson: String
+    val xrayConfigJson: String,
+    val xrayPayload: CoreXrayPayload = CoreXrayPayload()
 )
 
 @Serializable
