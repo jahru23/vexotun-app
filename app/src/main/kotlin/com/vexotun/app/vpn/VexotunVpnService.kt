@@ -289,7 +289,7 @@ class VexotunVpnService : VpnService() {
                         val cfg = ConfigStore(this@VexotunVpnService).load()
                         if (cfg.autoReconnect) {
                             TunnelState.appendLog("WARN", "Tunnel berhenti merespons, menyambung ulang otomatis...")
-                            scheduleReconnect()
+                            scheduleReconnect("Menyambung ulang tunnel yang terputus...")
                         } else {
                             TunnelState.appendLog("ERROR", "Tunnel terputus.")
                             TunnelState.setStatus(ConnectionStatus.ERROR, "Tunnel terputus")
@@ -365,12 +365,12 @@ class VexotunVpnService : VpnService() {
         runCatching { cm.unregisterNetworkCallback(cb) }
     }
 
-    private fun scheduleReconnect() {
+    private fun scheduleReconnect(reason: String = "Jaringan berubah, menyambung ulang...") {
         reconnectJob?.cancel()
         reconnectJob = serviceScope.launch {
             delay(1200L)
             if (isStopping) return@launch
-            TunnelState.appendLog("INFO", "Jaringan berubah, menyambung ulang...")
+            TunnelState.appendLog("INFO", reason)
             statsJob?.cancel()
             statsJob = null
             runCatching { Core.stop() }

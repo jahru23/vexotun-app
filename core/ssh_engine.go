@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -274,7 +275,7 @@ func (e *sshEngine) Alive() bool {
 		return false
 	}
 	if hc, ok := e.transportConn.(interface{ IsHealthy(time.Duration) bool }); ok {
-		if !hc.IsHealthy(14 * time.Second) {
+		if !hc.IsHealthy(20 * time.Second) {
 			return false
 		}
 	}
@@ -288,6 +289,7 @@ func (e *sshEngine) waitExitLoop() {
 		if !e.dead.Swap(true) {
 			logMsg("WARN", "Koneksi SSH tertutup dari server")
 		}
+		e.cancel()
 		if e.listener != nil {
 			_ = e.listener.Close()
 		}
@@ -296,7 +298,7 @@ func (e *sshEngine) waitExitLoop() {
 
 func (e *sshEngine) keepAliveLoop() {
 	defer e.wg.Done()
-	ticker := time.NewTicker(12 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -307,18 +309,25 @@ func (e *sshEngine) keepAliveLoop() {
 			if e.dead.Load() {
 				return
 			}
-			if hc, ok := e.transportConn.(interface{ IsHealthy(time.Duration) bool }); ok && !hc.IsHealthy(14 * time.Second) {
+			if hc, ok := e.transportConn.(interface{ IsHealthy(time.Duration) bool }); ok && !hc.IsHealthy(20 * time.Second) {
 				if e.ctx.Err() == nil && !e.dead.Swap(true) {
 					logMsg("WARN", "Jalur SlowDNS terhenti (timeout), memutus sesi untuk reconnect...")
 				}
+				e.cancel()
 				_ = e.transportConn.Close()
 				_ = e.client.Close()
+				if e.listener != nil {
+					_ = e.listener.Close()
+				}
 				return
 			}
 
+			// Note: Dropbear does not reply to global keepalive requests when wantReply=true
+			// (or answers with SSH_MSG_UNIMPLEMENTED, leaving x/crypto/ssh blocked indefinitely).
+			// Send wantReply=false to keep NAT/idle timers alive and detect broken transport writes.
 			kaDone := make(chan error, 1)
 			go func() {
-				_, _, err := e.client.SendRequest("keepalive@vexotun", true, nil)
+				_, _, err := e.client.SendRequest("keepalive@openssh.com", false, nil)
 				kaDone <- err
 			}()
 
@@ -330,16 +339,24 @@ func (e *sshEngine) keepAliveLoop() {
 					if e.ctx.Err() == nil && !e.dead.Swap(true) {
 						logMsg("WARN", "SSH keepalive failed: %v", err)
 					}
+					e.cancel()
 					_ = e.transportConn.Close()
 					_ = e.client.Close()
+					if e.listener != nil {
+						_ = e.listener.Close()
+					}
 					return
 				}
 			case <-time.After(8 * time.Second):
 				if e.ctx.Err() == nil && !e.dead.Swap(true) {
-					logMsg("WARN", "SSH keepalive timeout (>8s)")
+					logMsg("WARN", "SSH keepalive write timeout (>8s)")
 				}
+				e.cancel()
 				_ = e.transportConn.Close()
 				_ = e.client.Close()
+				if e.listener != nil {
+					_ = e.listener.Close()
+				}
 				return
 			}
 		}
@@ -351,13 +368,12 @@ func (e *sshEngine) acceptLoop() {
 	for {
 		c, err := e.listener.Accept()
 		if err != nil {
-			select {
-			case <-e.ctx.Done():
+			if e.dead.Load() || e.ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return
-			default:
-				logMsg("WARN", "SOCKS5 accept error: %v", err)
-				continue
 			}
+			logMsg("WARN", "SOCKS5 accept error: %v", err)
+			time.Sleep(15 * time.Millisecond)
+			continue
 		}
 		e.wg.Add(1)
 		go func() {
