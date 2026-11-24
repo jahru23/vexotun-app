@@ -4,6 +4,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 enum class ConnectionStatus {
     DISCONNECTED,
@@ -14,8 +17,12 @@ enum class ConnectionStatus {
 
 data class LogEntry(
     val level: String,
-    val message: String
+    val message: String,
+    val timestamp: String = currentLogTime()
 )
+
+private fun currentLogTime(): String =
+    SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
 
 data class VpnRuntimeState(
     val status: ConnectionStatus = ConnectionStatus.DISCONNECTED,
@@ -48,6 +55,14 @@ object TunnelState {
         _state.update { current ->
             val updated = (current.logs + LogEntry(level, message)).takeLast(MAX_LOGS)
             current.copy(logs = updated)
+        }
+    }
+
+    fun ensureInitialLogs(messages: List<String>) {
+        _state.update { current ->
+            if (current.logs.isNotEmpty()) return@update current
+            val time = currentLogTime()
+            current.copy(logs = messages.map { LogEntry("INFO", it, time) })
         }
     }
 

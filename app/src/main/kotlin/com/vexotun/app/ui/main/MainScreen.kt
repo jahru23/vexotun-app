@@ -115,13 +115,19 @@ import com.vexotun.app.model.XrayProtocol
 import com.vexotun.app.model.XrayTransport
 import com.vexotun.app.vpn.ConnectionStatus
 import com.vexotun.app.vpn.VpnRuntimeState
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.material.icons.filled.CheckCircle
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 
 private enum class AppPage(val title: String, val icon: ImageVector) {
     TUNNEL("Tunnel", Icons.Default.PowerSettingsNew),
     CONFIG("Config", Icons.Default.Key),
-    LOGS("Log Koneksi", Icons.Default.Terminal),
     APPS("Filter Aplikasi", Icons.Default.Apps),
     SETTINGS("Pengaturan", Icons.Default.Tune)
 }
@@ -144,6 +150,20 @@ fun MainScreen(
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+
+    var showConnectedBanner by remember { mutableStateOf(false) }
+    var lastStatus by remember { mutableStateOf(runtime.status) }
+
+    LaunchedEffect(runtime.status) {
+        if (runtime.status == ConnectionStatus.CONNECTED && lastStatus != ConnectionStatus.CONNECTED) {
+            showConnectedBanner = true
+            delay(3000L)
+            showConnectedBanner = false
+        } else if (runtime.status != ConnectionStatus.CONNECTED) {
+            showConnectedBanner = false
+        }
+        lastStatus = runtime.status
+    }
 
     if (showImportDialog) {
         ImportLinkDialog(
@@ -196,15 +216,13 @@ fun MainScreen(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Spacer(Modifier.height(8.dp))
 
-                AppPage.entries.forEach { page ->
+                listOf(AppPage.APPS, AppPage.SETTINGS).forEach { page ->
                     NavigationDrawerItem(
                         icon = { Icon(page.icon, contentDescription = null) },
                         label = { Text(page.title) },
                         selected = currentPage == page,
                         onClick = {
-                            if (page != AppPage.CONFIG) {
-                                editingProfileId = null
-                            }
+                            editingProfileId = null
                             currentPage = page
                             scope.launch { drawerState.close() }
                         },
@@ -221,13 +239,21 @@ fun MainScreen(
                         containerColor = MaterialTheme.colorScheme.background
                     ),
                     navigationIcon = {
-                        if (currentPage == AppPage.CONFIG && editingProfileId != null) {
-                            IconButton(onClick = { editingProfileId = null }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Kembali")
+                        when {
+                            currentPage == AppPage.CONFIG && editingProfileId != null -> {
+                                IconButton(onClick = { editingProfileId = null }) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Kembali")
+                                }
                             }
-                        } else {
-                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                                Icon(Icons.Default.Menu, contentDescription = "Menu")
+                            currentPage == AppPage.APPS || currentPage == AppPage.SETTINGS -> {
+                                IconButton(onClick = { currentPage = AppPage.TUNNEL }) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Kembali")
+                                }
+                            }
+                            else -> {
+                                IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                    Icon(Icons.Default.Menu, contentDescription = "Menu")
+                                }
                             }
                         }
                     },
@@ -292,7 +318,8 @@ fun MainScreen(
                         onOpenImport = { showImportDialog = true },
                         onStartClick = onRequestVpnStart,
                         onStopClick = viewModel::stopVpn,
-                        onPingClick = viewModel::runPingCheck
+                        onPingClick = viewModel::runPingCheck,
+                        onClearLogs = viewModel::clearLogs
                     )
                     AppPage.CONFIG -> {
                         val editTarget = editingProfileId?.let { id ->
@@ -320,10 +347,6 @@ fun MainScreen(
                             )
                         }
                     }
-                    AppPage.LOGS -> LogsPage(
-                        runtime = runtime,
-                        onClear = viewModel::clearLogs
-                    )
                     AppPage.APPS -> SplitTunnelPage(
                         config = config,
                         apps = apps,
@@ -334,6 +357,42 @@ fun MainScreen(
                         config = config,
                         onUpdateConfig = viewModel::updateConfig
                     )
+                }
+
+                AnimatedVisibility(
+                    visible = showConnectedBanner,
+                    enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                    exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                ) {
+                    Surface(
+                        onClick = { showConnectedBanner = false },
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF0D9488),
+                        border = BorderStroke(1.dp, Color(0xFF2DD4BF)),
+                        shadowElevation = 6.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                "VexoTun Tersambung",
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -545,10 +604,19 @@ private fun TunnelPage(
     onOpenImport: () -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
-    onPingClick: () -> Unit
+    onPingClick: () -> Unit,
+    onClearLogs: () -> Unit
 ) {
     val active = config.activeProfile()
     val isActive = runtime.status == ConnectionStatus.CONNECTED || runtime.status == ConnectionStatus.CONNECTING
+    val context = LocalContext.current
+    val logListState = rememberLazyListState()
+
+    LaunchedEffect(runtime.logs.size) {
+        if (runtime.logs.isNotEmpty()) {
+            logListState.animateScrollToItem(runtime.logs.lastIndex)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -801,12 +869,115 @@ private fun TunnelPage(
             enabled = !isPinging && active != null,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(46.dp),
+                .height(44.dp),
             shape = RoundedCornerShape(12.dp)
         ) {
             Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
             Text(if (isPinging) "Mengukur Latency..." else "Cek Ping")
+        }
+
+        // Inline Live Log Console
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Terminal,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            "Log",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        IconButton(
+                            onClick = {
+                                val text = runtime.logs.joinToString("\n") {
+                                    "[${it.timestamp}] ${it.message}"
+                                }
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("vexotun_logs", text))
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.ContentCopy,
+                                contentDescription = "Salin Log",
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = onClearLogs,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.DeleteOutline,
+                                contentDescription = "Bersihkan Log",
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .background(Color(0xFF070B12))
+                ) {
+                    if (runtime.logs.isEmpty()) {
+                        Text(
+                            "Belum ada log.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(12.dp)
+                        )
+                    } else {
+                        LazyColumn(
+                            state = logListState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            items(runtime.logs) { entry ->
+                                val color = when (entry.level) {
+                                    "ERROR" -> Color(0xFFF87171)
+                                    "WARN" -> Color(0xFFFBBF24)
+                                    else -> Color(0xFF34D399)
+                                }
+                                Text(
+                                    text = "[${entry.timestamp}] ${entry.message}",
+                                    color = color,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1380,90 +1551,6 @@ private fun SshProfileEditor(
                         minLines = 3,
                         maxLines = 6,
                         modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun LogsPage(
-    runtime: VpnRuntimeState,
-    onClear: () -> Unit
-) {
-    val context = LocalContext.current
-    val listState = rememberLazyListState()
-
-    LaunchedEffect(runtime.logs.size) {
-        if (runtime.logs.isNotEmpty()) {
-            listState.animateScrollToItem(runtime.logs.lastIndex)
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                "${runtime.logs.size} baris log",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        val text = runtime.logs.joinToString("\n") { "${it.level}: ${it.message}" }
-                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("vexotun_logs", text))
-                    },
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Salin", fontSize = 12.sp)
-                }
-                OutlinedButton(
-                    onClick = onClear,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Hapus", fontSize = 12.sp)
-                }
-            }
-        }
-
-        Card(
-            modifier = Modifier.fillMaxSize(),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF0A0E14))
-        ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(runtime.logs) { entry ->
-                    val color = when (entry.level) {
-                        "ERROR" -> Color(0xFFF87171)
-                        "WARN" -> Color(0xFFFBBF24)
-                        else -> Color(0xFF34D399)
-                    }
-                    Text(
-                        text = entry.message,
-                        color = color,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp
                     )
                 }
             }

@@ -1,10 +1,18 @@
 package com.vexotun.app.ui.main
 
 import android.app.Application
+import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
+import android.telephony.TelephonyManager
+import androidx.core.content.pm.PackageInfoCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import java.net.Inet4Address
+import java.util.Locale
 import com.vexotun.app.data.ConfigStore
 import com.vexotun.app.model.LinkParser
 import com.vexotun.app.model.SplitTunnelMode
@@ -44,7 +52,59 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     val isPinging: StateFlow<Boolean> = _isPinging.asStateFlow()
 
     init {
+        logDeviceAndNetworkInfo()
         loadInstalledApps()
+    }
+
+    private fun logDeviceAndNetworkInfo() {
+        val ctx = getApplication<Application>()
+        val (versionName, versionCode) = runCatching {
+            val info = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+            val name = info.versionName ?: "1.0.0"
+            val code = PackageInfoCompat.getLongVersionCode(info)
+            name to code
+        }.getOrElse { "1.0.0" to 1L }
+
+        val deviceLine = "${Build.MANUFACTURER.uppercase(Locale.ROOT)} ${Build.MODEL}".trim()
+        val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
+        val osLine = "Android ${Build.VERSION.RELEASE} API-${Build.VERSION.SDK_INT} / $abi"
+
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val activeNetwork = cm?.activeNetwork
+        val caps = activeNetwork?.let { cm.getNetworkCapabilities(it) }
+        val transportLabel = when {
+            caps == null -> "Offline"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WiFi"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Seluler"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+            else -> "Jaringan"
+        }
+        val tm = ctx.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+        val carrier = tm?.networkOperatorName?.trim().orEmpty()
+        val networkLine = if (carrier.isNotEmpty() && transportLabel == "Seluler") {
+            "$carrier / $transportLabel"
+        } else if (carrier.isNotEmpty() && transportLabel == "WiFi") {
+            "$carrier / $transportLabel"
+        } else {
+            transportLabel
+        }
+
+        val localIp = activeNetwork?.let { net ->
+            cm.getLinkProperties(net)?.linkAddresses
+                ?.mapNotNull { it.address as? Inet4Address }
+                ?.firstOrNull { !it.isLoopbackAddress }
+                ?.hostAddress
+        } ?: "-"
+
+        TunnelState.ensureInitialLogs(
+            listOf(
+                "Vexotun $versionName ($versionCode)",
+                deviceLine,
+                osLine,
+                networkLine,
+                "IP $localIp"
+            )
+        )
     }
 
     fun updateConfig(transform: (VexotunConfig) -> VexotunConfig) {

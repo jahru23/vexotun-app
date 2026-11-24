@@ -68,9 +68,15 @@ class VexotunVpnService : VpnService() {
                 stopSelf()
                 return@launch
             }
+            var detachedFd = -1
             try {
+                val protoLabel = if (profile.mode == TunnelMode.XRAY) {
+                    profile.xray.protocol.name
+                } else {
+                    "SSH"
+                }
                 TunnelState.setStatus(ConnectionStatus.CONNECTING, "Menghubungkan ke ${profile.name}...")
-                TunnelState.appendLog("INFO", "Memulai ${profile.mode.label}: ${profile.name}")
+                TunnelState.appendLog("INFO", "Connecting $protoLabel")
 
                 val builder = Builder()
                     .setSession("Vexotun")
@@ -83,7 +89,7 @@ class VexotunVpnService : VpnService() {
 
                 val pfd = builder.establish()
                     ?: throw IllegalStateException("Gagal membuat interface VPN")
-                tunInterface = pfd
+                TunnelState.appendLog("INFO", "VPN siap.")
 
                 val xrayJson = if (profile.mode == TunnelMode.XRAY) {
                     XrayConfigBuilder.buildJson(profile.xray)
@@ -117,12 +123,25 @@ class VexotunVpnService : VpnService() {
                     TunnelState.appendLog(level, message)
                 }
 
-                Core.start(pfd.fd, json.encodeToString(coreConfig), protector, logger)
+                // Detach FD so tun2socks owns and closes it without triggering Android fdsan SIGABRT.
+                detachedFd = pfd.detachFd()
+                tunInterface = null
+
+                TunnelState.appendLog("INFO", "Memulai ${profile.mode.label}.")
+                Core.start(detachedFd, json.encodeToString(coreConfig), protector, logger)
+                detachedFd = -1
+
+                TunnelState.appendLog("INFO", "Engine aktif.")
+                TunnelState.appendLog("INFO", "Rute VPN aktif.")
+                TunnelState.appendLog("INFO", "Tersambung.")
 
                 TunnelState.setStatus(ConnectionStatus.CONNECTED, "Terhubung • ${profile.name}")
                 updateNotification("Terhubung • ${profile.name}")
                 startStatsLoop()
             } catch (t: Throwable) {
+                if (detachedFd >= 0 && !Core.isRunning()) {
+                    runCatching { ParcelFileDescriptor.adoptFd(detachedFd).close() }
+                }
                 val errMsg = t.message ?: "Gagal menghubungkan tunnel"
                 TunnelState.appendLog("ERROR", errMsg)
                 TunnelState.setStatus(ConnectionStatus.ERROR, errMsg)
@@ -173,8 +192,10 @@ class VexotunVpnService : VpnService() {
 
     private fun stopTunnel() {
         serviceScope.launch {
+            TunnelState.appendLog("INFO", "Memutus koneksi...")
             cleanupResources()
             TunnelState.setStatus(ConnectionStatus.DISCONNECTED, "Terputus")
+            TunnelState.appendLog("INFO", "Koneksi terputus.")
             TunnelState.updateTraffic(0L, 0L)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
