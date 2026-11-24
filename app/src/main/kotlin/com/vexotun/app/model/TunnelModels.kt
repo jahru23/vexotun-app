@@ -104,7 +104,9 @@ data class VexotunConfig(
     val dnsServer: String = "8.8.8.8",
     val splitMode: SplitTunnelMode = SplitTunnelMode.ALL_APPS,
     val splitPackages: List<String> = emptyList(),
-    val darkTheme: Boolean = true
+    val darkTheme: Boolean = true,
+    val autoReconnect: Boolean = true,
+    val bypassLan: Boolean = true
 ) {
     fun activeProfile(): TunnelProfile? =
         profiles.firstOrNull { it.id == activeProfileId } ?: profiles.firstOrNull()

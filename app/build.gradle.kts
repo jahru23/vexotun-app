@@ -11,8 +11,8 @@ android {
     applicationId = "com.vexotun.app"
     minSdk = 24
     targetSdk = 35
-    versionCode = 4
-    versionName = "1.2.1"
+    versionCode = 5
+    versionName = "1.3.0"
   }
 
   signingConfigs {
@@ -106,7 +106,8 @@ dependencies {
   // Tunnel Core AAR (built via gomobile bind)
   implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
 
-  // Icons & JSON Serialization
+  // Icons, QR Scanner & JSON Serialization
   implementation("androidx.compose.material:material-icons-extended")
   implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
+  implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

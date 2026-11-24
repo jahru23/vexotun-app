@@ -3,7 +3,12 @@ package com.vexotun.app.ui.main
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -22,6 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,6 +49,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.NetworkPing
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Tune
@@ -115,14 +122,12 @@ import com.vexotun.app.model.VexotunConfig
 import com.vexotun.app.model.XrayProtocol
 import com.vexotun.app.model.XrayTransport
 import com.vexotun.app.vpn.ConnectionStatus
+import com.vexotun.app.vpn.TrafficStatsState
 import com.vexotun.app.vpn.VpnRuntimeState
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.material.icons.filled.CheckCircle
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -170,7 +175,7 @@ fun MainScreen(
         ImportLinkDialog(
             onDismiss = { showImportDialog = false },
             onImport = { linkText ->
-                val result = viewModel.importFromLink(linkText)
+                val result = viewModel.importFromLinks(linkText)
                 if (result.isSuccess) {
                     showImportDialog = false
                 }
@@ -310,8 +315,10 @@ fun MainScreen(
                     AppPage.TUNNEL -> TunnelPage(
                         config = config,
                         runtime = runtime,
+                        trafficStateFlow = viewModel.trafficState,
                         isPinging = isPinging,
                         onSelectProfile = viewModel::selectProfile,
+                        onQuickUpdateBugSni = viewModel::quickUpdateBugSni,
                         onGoToConfig = {
                             editingProfileId = null
                             currentPage = AppPage.CONFIG
@@ -406,9 +413,9 @@ fun MainScreen(
 @Composable
 private fun StatusBadge(status: ConnectionStatus, modifier: Modifier = Modifier) {
     val (bg, fg, label) = when (status) {
-        ConnectionStatus.CONNECTED -> Triple(Color(0xFF064E3B), Color(0xFF34D399), "Terhubung")
-        ConnectionStatus.CONNECTING -> Triple(Color(0xFF78350F), Color(0xFFFBBF24), "Menghubungkan")
-        ConnectionStatus.ERROR -> Triple(Color(0xFF7F1D1D), Color(0xFFF87171), "Gagal")
+        ConnectionStatus.CONNECTED -> Triple(Color(0xFF163835), Color(0xFF4DB6AC), "Terhubung")
+        ConnectionStatus.CONNECTING -> Triple(Color(0xFF33260D), Color(0xFFF59E0B), "Menghubungkan")
+        ConnectionStatus.ERROR -> Triple(Color(0xFF3B1212), Color(0xFFEF6C6C), "Gagal")
         ConnectionStatus.DISCONNECTED -> Triple(
             MaterialTheme.colorScheme.surfaceVariant,
             MaterialTheme.colorScheme.onSurfaceVariant,
@@ -529,11 +536,19 @@ private fun CreateConfigTypeDialog(
 @Composable
 private fun ImportLinkDialog(
     onDismiss: () -> Unit,
-    onImport: (String) -> Result<TunnelProfile>
+    onImport: (String) -> Result<Int>
 ) {
     val context = LocalContext.current
     var input by remember { mutableStateOf("") }
     var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    val qrLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val contents = result.contents?.trim()
+        if (!contents.isNullOrEmpty()) {
+            input = if (input.isBlank()) contents else "$input\n$contents"
+            errorMsg = null
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -541,7 +556,7 @@ private fun ImportLinkDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Tempel 1 link vmess://, vless://, trojan://, atau ss://",
+                    "Tempel satu atau beberapa link (pisahkan baris baru), atau scan QR",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -551,9 +566,9 @@ private fun ImportLinkDialog(
                         input = it
                         errorMsg = null
                     },
-                    placeholder = { Text("vmess://...") },
+                    placeholder = { Text("vmess://...\nvless://...") },
                     minLines = 3,
-                    maxLines = 5,
+                    maxLines = 6,
                     isError = errorMsg != null,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -564,20 +579,41 @@ private fun ImportLinkDialog(
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
-                TextButton(
-                    onClick = {
-                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        val clip = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
-                        if (clip.isNotBlank()) {
-                            input = clip
-                            errorMsg = null
-                        }
-                    },
-                    contentPadding = PaddingValues(horizontal = 4.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Tempel dari Clipboard")
+                    TextButton(
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+                            if (clip.isNotBlank()) {
+                                input = clip
+                                errorMsg = null
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 6.dp)
+                    ) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Clipboard", fontSize = 13.sp)
+                    }
+                    TextButton(
+                        onClick = {
+                            val options = ScanOptions().apply {
+                                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                setPrompt("Arahkan kamera ke QR Config Vexotun")
+                                setBeepEnabled(false)
+                                setOrientationLocked(false)
+                            }
+                            qrLauncher.launch(options)
+                        },
+                        contentPadding = PaddingValues(horizontal = 6.dp)
+                    ) {
+                        Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Scan QR", fontSize = 13.sp)
+                    }
                 }
             }
         },
@@ -602,8 +638,10 @@ private fun ImportLinkDialog(
 private fun TunnelPage(
     config: VexotunConfig,
     runtime: VpnRuntimeState,
+    trafficStateFlow: StateFlow<TrafficStatsState>,
     isPinging: Boolean,
     onSelectProfile: (String) -> Unit,
+    onQuickUpdateBugSni: (String) -> Unit,
     onGoToConfig: () -> Unit,
     onOpenImport: () -> Unit,
     onStartClick: () -> Unit,
@@ -614,372 +652,435 @@ private fun TunnelPage(
     val active = config.activeProfile()
     val isActive = runtime.status == ConnectionStatus.CONNECTED || runtime.status == ConnectionStatus.CONNECTING
     val context = LocalContext.current
-    val logListState = rememberLazyListState()
+    val listState = rememberLazyListState()
+    var showQuickSniDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(runtime.logs.size) {
-        if (runtime.logs.isNotEmpty()) {
-            logListState.animateScrollToItem(runtime.logs.lastIndex)
+    if (showQuickSniDialog && active != null) {
+        val currentSni = when (active.mode) {
+            TunnelMode.XRAY -> active.xray.sni.ifBlank { active.xray.host }
+            TunnelMode.SSH -> active.ssh.sni.ifBlank { active.ssh.wsHost }
         }
+        var bugInput by remember(active.id, currentSni) { mutableStateOf(currentSni) }
+        AlertDialog(
+            onDismissRequest = { showQuickSniDialog = false },
+            title = { Text("Ubah Bug / SNI") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Mengubah Host & SNI pada config aktif (${active.name}).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = bugInput,
+                        onValueChange = { bugInput = it },
+                        label = { Text("Bug / Host / SNI") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    onQuickUpdateBugSni(bugInput)
+                    showQuickSniDialog = false
+                }) {
+                    Text("Simpan")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQuickSniDialog = false }) {
+                    Text("Batal")
+                }
+            }
+        )
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp)
     ) {
         if (active == null) {
-            // Empty state: user must create or import config first
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+            item(key = "empty_config") {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant
                 ) {
-                    Icon(
-                        Icons.Default.VpnKey,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(40.dp)
-                    )
-                    Text(
-                        "Belum Ada Config",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "Buat config Xray atau SSH terlebih dahulu di halaman Config, atau import link untuk mulai menghubungkan.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Button(
-                        onClick = onGoToConfig,
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(46.dp)
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Buat Config")
-                    }
-                    OutlinedButton(
-                        onClick = onOpenImport,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(46.dp)
-                    ) {
-                        Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Import Link")
+                        Icon(
+                            Icons.Default.VpnKey,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(38.dp)
+                        )
+                        Text(
+                            "Belum Ada Config",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Buat config Xray atau SSH terlebih dahulu di halaman Config, atau import link untuk mulai menghubungkan.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Button(
+                            onClick = onGoToConfig,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Buat Config")
+                        }
+                        OutlinedButton(
+                            onClick = onOpenImport,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Import Link")
+                        }
                     }
                 }
+                Spacer(Modifier.height(12.dp))
             }
         } else {
-            // Config Dropdown Selector
-            var expanded by remember { mutableStateOf(false) }
+            item(key = "config_selector") {
+                var expanded by remember { mutableStateOf(false) }
 
-            ExposedDropdownMenuBox(
-                expanded = expanded && !isActive,
-                onExpandedChange = { if (!isActive) expanded = !expanded }
-            ) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .menuAnchor(MenuAnchorType.PrimaryNotEditable),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ExposedDropdownMenuBox(
+                    expanded = expanded && !isActive,
+                    onExpandedChange = { if (!isActive) expanded = !expanded }
                 ) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "Config Aktif",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    ModeBadge(active.mode)
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    active.name,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    active.summary(),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (!isActive) {
+                                IconButton(
+                                    onClick = { showQuickSniDialog = true },
+                                    modifier = Modifier.size(34.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Edit,
+                                        contentDescription = "Ubah Bug / SNI",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+                            }
+                        }
+                    }
+
+                    ExposedDropdownMenu(
+                        expanded = expanded && !isActive,
+                        onDismissRequest = { expanded = false }
+                    ) {
+                        config.profiles.forEach { profile ->
+                            DropdownMenuItem(
+                                text = {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                profile.name,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                profile.summary(),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Spacer(Modifier.width(8.dp))
+                                        ModeBadge(profile.mode)
+                                    }
+                                },
+                                onClick = {
+                                    onSelectProfile(profile.id)
+                                    expanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
+            item(key = "connection_panel") {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = when (runtime.status) {
+                                        ConnectionStatus.CONNECTED -> "Tunnel Terhubung"
+                                        ConnectionStatus.CONNECTING -> "Menghubungkan..."
+                                        ConnectionStatus.ERROR -> "Koneksi Gagal"
+                                        ConnectionStatus.DISCONNECTED -> "Siap Dihubungkan"
+                                    },
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Engine: ${active.mode.label}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            StatusBadge(runtime.status)
+                        }
+
+                        if (runtime.statusMessage.isNotBlank() && runtime.status == ConnectionStatus.ERROR) {
+                            Text(
+                                text = runtime.statusMessage,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+
+                        Button(
+                            onClick = { if (isActive) onStopClick() else onStartClick() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isActive) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                }
+                            )
+                        ) {
+                            Icon(
+                                Icons.Default.PowerSettingsNew,
+                                contentDescription = null,
+                                modifier = Modifier.size(19.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                if (isActive) "Putuskan Koneksi" else "Hubungkan",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+        }
+
+        item(key = "traffic_stats") {
+            TrafficStatsSection(trafficStateFlow = trafficStateFlow)
+            Spacer(Modifier.height(12.dp))
+        }
+
+        item(key = "ping_button") {
+            OutlinedButton(
+                onClick = onPingClick,
+                enabled = !isPinging && active != null,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(if (isPinging) "Mengukur Latency..." else "Cek Ping")
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+
+        item(key = "log_header") {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "Config Aktif",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                ModeBadge(active.mode)
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                active.name,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                active.summary(),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        if (!isActive) {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
-                        }
-                    }
-                }
-
-                ExposedDropdownMenu(
-                    expanded = expanded && !isActive,
-                    onDismissRequest = { expanded = false }
-                ) {
-                    config.profiles.forEach { profile ->
-                        DropdownMenuItem(
-                            text = {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            profile.name,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            profile.summary(),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                    Spacer(Modifier.width(8.dp))
-                                    ModeBadge(profile.mode)
-                                }
-                            },
-                            onClick = {
-                                onSelectProfile(profile.id)
-                                expanded = false
-                            }
-                        )
-                    }
-                }
-            }
-
-            // Connection Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                border = BorderStroke(
-                    1.dp,
-                    if (runtime.status == ConnectionStatus.CONNECTED) {
-                        MaterialTheme.colorScheme.secondary
-                    } else {
-                        MaterialTheme.colorScheme.outline
-                    }
-                ),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Terminal,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
                             Text(
-                                text = when (runtime.status) {
-                                    ConnectionStatus.CONNECTED -> "Tunnel Terhubung"
-                                    ConnectionStatus.CONNECTING -> "Menghubungkan..."
-                                    ConnectionStatus.ERROR -> "Koneksi Gagal"
-                                    ConnectionStatus.DISCONNECTED -> "Siap Dihubungkan"
+                                "Log",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            IconButton(
+                                onClick = {
+                                    val text = runtime.logs.joinToString("\n") {
+                                        "[${it.timestamp}] ${it.message}"
+                                    }
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("vexotun_logs", text))
                                 },
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Engine otomatis: ${active.mode.label}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        ModeBadge(active.mode)
-                    }
-
-                    if (runtime.statusMessage.isNotBlank() && runtime.status == ConnectionStatus.ERROR) {
-                        Text(
-                            text = runtime.statusMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-
-                    Button(
-                        onClick = { if (isActive) onStopClick() else onStartClick() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isActive) {
-                                Color(0xFFDC2626)
-                            } else {
-                                MaterialTheme.colorScheme.primary
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.ContentCopy,
+                                    contentDescription = "Salin Log",
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
-                        )
-                    ) {
-                        Icon(
-                            Icons.Default.PowerSettingsNew,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            if (isActive) "Putuskan Koneksi" else "Hubungkan",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
-                        )
-                    }
-                }
-            }
-        }
-
-        // Traffic & Ping Row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            StatCard("Upload", formatBytes(runtime.bytesUp), Modifier.weight(1f))
-            StatCard("Download", formatBytes(runtime.bytesDown), Modifier.weight(1f))
-            StatCard("Ping", runtime.pingMs?.let { "$it ms" } ?: "--", Modifier.weight(1f))
-        }
-
-        OutlinedButton(
-            onClick = onPingClick,
-            enabled = !isPinging && active != null,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(44.dp),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Icon(Icons.Default.NetworkPing, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(if (isPinging) "Mengukur Latency..." else "Cek Ping")
-        }
-
-        // Inline Live Log Console
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Terminal,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            "Log",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        IconButton(
-                            onClick = {
-                                val text = runtime.logs.joinToString("\n") {
-                                    "[${it.timestamp}] ${it.message}"
-                                }
-                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                cm.setPrimaryClip(ClipData.newPlainText("vexotun_logs", text))
-                            },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.ContentCopy,
-                                contentDescription = "Salin Log",
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                        IconButton(
-                            onClick = onClearLogs,
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.DeleteOutline,
-                                contentDescription = "Bersihkan Log",
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp)
-                        .background(Color(0xFF070B12))
-                ) {
-                    if (runtime.logs.isEmpty()) {
-                        Text(
-                            "Belum ada log.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(12.dp)
-                        )
-                    } else {
-                        LazyColumn(
-                            state = logListState,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(3.dp)
-                        ) {
-                            items(runtime.logs) { entry ->
-                                val color = when (entry.level) {
-                                    "ERROR" -> Color(0xFFF87171)
-                                    "WARN" -> Color(0xFFFBBF24)
-                                    else -> Color(0xFF34D399)
-                                }
-                                Text(
-                                    text = "[${entry.timestamp}] ${entry.message}",
-                                    color = color,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    lineHeight = 15.sp
+                            IconButton(
+                                onClick = onClearLogs,
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.DeleteOutline,
+                                    contentDescription = "Bersihkan Log",
+                                    modifier = Modifier.size(16.dp)
                                 )
                             }
                         }
                     }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+        }
+
+        if (runtime.logs.isEmpty()) {
+            item(key = "log_empty") {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp))
+                        .background(Color(0xFF0B0D0F))
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Belum ada log.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else {
+            itemsIndexed(
+                items = runtime.logs,
+                key = { _, entry -> entry.id }
+            ) { index, entry ->
+                val isLast = index == runtime.logs.lastIndex
+                val color = when (entry.level) {
+                    "ERROR" -> Color(0xFFEF6C6C)
+                    "WARN" -> Color(0xFFF59E0B)
+                    else -> Color(0xFF80CBC4)
+                }
+                val shape = if (isLast) {
+                    RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp)
+                } else {
+                    RoundedCornerShape(0.dp)
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(shape)
+                        .background(Color(0xFF0B0D0F))
+                        .padding(
+                            start = 12.dp,
+                            end = 12.dp,
+                            top = if (index == 0) 8.dp else 2.dp,
+                            bottom = if (isLast) 10.dp else 2.dp
+                        )
+                ) {
+                    Text(
+                        text = "[${entry.timestamp}] ${entry.message}",
+                        color = color,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp
+                    )
                 }
             }
         }
@@ -987,11 +1088,53 @@ private fun TunnelPage(
 }
 
 @Composable
+private fun TrafficStatsSection(trafficStateFlow: StateFlow<TrafficStatsState>) {
+    val traffic by trafficStateFlow.collectAsState()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            StatCard(
+                title = "Kecepatan ↑",
+                value = "${formatBytes(traffic.speedUpBps)}/s",
+                modifier = Modifier.weight(1f)
+            )
+            StatCard(
+                title = "Kecepatan ↓",
+                value = "${formatBytes(traffic.speedDownBps)}/s",
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            StatCard(
+                title = "Upload",
+                value = formatBytes(traffic.bytesUp),
+                modifier = Modifier.weight(1f)
+            )
+            StatCard(
+                title = "Download",
+                value = formatBytes(traffic.bytesDown),
+                modifier = Modifier.weight(1f)
+            )
+            StatCard(
+                title = "Ping",
+                value = traffic.pingMs?.let { "$it ms" } ?: "--",
+                modifier = Modifier.weight(0.85f)
+            )
+        }
+    }
+}
+
+@Composable
 private fun StatCard(title: String, value: String, modifier: Modifier = Modifier) {
-    Card(
+    Surface(
         modifier = modifier,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Text(
@@ -1000,7 +1143,7 @@ private fun StatCard(title: String, value: String, modifier: Modifier = Modifier
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(3.dp))
             Text(
                 value,
                 style = MaterialTheme.typography.titleSmall,
@@ -1570,6 +1713,7 @@ private fun SplitTunnelPage(
     onTogglePackage: (String) -> Unit
 ) {
     var query by remember { mutableStateOf("") }
+    val selectedSet = remember(config.splitPackages) { config.splitPackages.toHashSet() }
     val filtered = remember(apps, query) {
         if (query.isBlank()) apps
         else apps.filter {
@@ -1621,7 +1765,7 @@ private fun SplitTunnelPage(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 items(filtered, key = { it.packageName }) { app ->
-                    val checked = app.packageName in config.splitPackages
+                    val checked = app.packageName in selectedSet
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1679,35 +1823,37 @@ private fun SettingsPage(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Card(
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Mode Gelap", fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "Tampilan gelap untuk kenyamanan mata",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
+            Column(modifier = Modifier.fillMaxWidth()) {
+                SettingsSwitchRow(
+                    title = "Mode Gelap",
+                    subtitle = "Tampilan gelap untuk kenyamanan mata",
                     checked = config.darkTheme,
                     onCheckedChange = { dark -> onUpdateConfig { it.copy(darkTheme = dark) } }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsSwitchRow(
+                    title = "Auto-Reconnect",
+                    subtitle = "Sambung ulang otomatis saat pindah WiFi / Seluler",
+                    checked = config.autoReconnect,
+                    onCheckedChange = { auto -> onUpdateConfig { it.copy(autoReconnect = auto) } }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsSwitchRow(
+                    title = "Bypass Jaringan Lokal",
+                    subtitle = "Lewatkan trafik IP lokal langsung tanpa tunnel",
+                    checked = config.bypassLan,
+                    onCheckedChange = { bypass -> onUpdateConfig { it.copy(bypassLan = bypass) } }
                 )
             }
         }
 
-        Card(
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant
         ) {
             Column(
                 modifier = Modifier
@@ -1727,7 +1873,7 @@ private fun SettingsPage(
                     OutlinedTextField(
                         value = config.mtu.toString(),
                         onValueChange = { v ->
-                            val m = v.filter(Char::isDigit).toIntOrNull() ?: 1500
+                            val m = v.filter(Char::isDigit).toIntOrNull() ?: 1420
                             onUpdateConfig { it.copy(mtu = m) }
                         },
                         label = { Text("MTU") },
@@ -1738,6 +1884,36 @@ private fun SettingsPage(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsSwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange
+        )
     }
 }
 

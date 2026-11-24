@@ -7,6 +7,10 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -42,14 +46,24 @@ class VexotunVpnService : VpnService() {
 
     private var tunInterface: ParcelFileDescriptor? = null
     private var statsJob: Job? = null
+    private var reconnectJob: Job? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    @Volatile
+    private var activeNetworkHandle: Long? = null
+
+    @Volatile
+    private var isStopping: Boolean = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                isStopping = true
                 stopTunnel()
                 return START_NOT_STICKY
             }
             ACTION_START, null -> {
+                isStopping = false
                 startForegroundNotification("Menghubungkan...")
                 val config = ConfigStore(this).load()
                 startTunnel(config)
@@ -92,7 +106,11 @@ class VexotunVpnService : VpnService() {
                 TunnelState.appendLog("INFO", "VPN siap.")
 
                 val xrayJson = if (profile.mode == TunnelMode.XRAY) {
-                    XrayConfigBuilder.buildJson(profile.xray)
+                    XrayConfigBuilder.buildJson(
+                        profile = profile.xray,
+                        dnsServer = config.dnsServer,
+                        bypassLan = config.bypassLan
+                    )
                 } else {
                     ""
                 }
@@ -138,6 +156,9 @@ class VexotunVpnService : VpnService() {
                 TunnelState.setStatus(ConnectionStatus.CONNECTED, "Terhubung • ${profile.name}")
                 updateNotification("Terhubung • ${profile.name}")
                 startStatsLoop()
+                if (config.autoReconnect) {
+                    registerNetworkCallback()
+                }
             } catch (t: Throwable) {
                 if (detachedFd >= 0 && !Core.isRunning()) {
                     runCatching { ParcelFileDescriptor.adoptFd(detachedFd).close() }
@@ -191,18 +212,80 @@ class VexotunVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        isStopping = true
         serviceScope.launch {
             TunnelState.appendLog("INFO", "Memutus koneksi...")
             cleanupResources()
             TunnelState.setStatus(ConnectionStatus.DISCONNECTED, "Terputus")
             TunnelState.appendLog("INFO", "Koneksi terputus.")
-            TunnelState.updateTraffic(0L, 0L)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
     }
 
+    private fun registerNetworkCallback() {
+        unregisterNetworkCallback()
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        activeNetworkHandle = cm.activeNetwork?.networkHandle
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (isStopping) return
+                val handle = network.networkHandle
+                val prev = activeNetworkHandle
+                if (prev == null) {
+                    activeNetworkHandle = handle
+                    return
+                }
+                if (prev != handle) {
+                    activeNetworkHandle = handle
+                    scheduleReconnect()
+                }
+            }
+
+            override fun onLost(network: Network) {
+                if (isStopping) return
+                if (activeNetworkHandle == network.networkHandle) {
+                    activeNetworkHandle = null
+                }
+            }
+        }
+        runCatching {
+            cm.registerNetworkCallback(request, callback)
+            networkCallback = callback
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cb = networkCallback ?: return
+        networkCallback = null
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        runCatching { cm.unregisterNetworkCallback(cb) }
+    }
+
+    private fun scheduleReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = serviceScope.launch {
+            delay(1200L)
+            if (isStopping) return@launch
+            TunnelState.appendLog("INFO", "Jaringan berubah, menyambung ulang...")
+            statsJob?.cancel()
+            statsJob = null
+            runCatching { Core.stop() }
+            runCatching { tunInterface?.close() }
+            tunInterface = null
+            val config = ConfigStore(this@VexotunVpnService).load()
+            startTunnel(config)
+        }
+    }
+
     private fun cleanupResources() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+        unregisterNetworkCallback()
         statsJob?.cancel()
         statsJob = null
         runCatching { Core.stop() }

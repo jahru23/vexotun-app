@@ -44,6 +44,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     val config: StateFlow<VexotunConfig> = _config.asStateFlow()
 
     val runtimeState = TunnelState.state
+    val trafficState = TunnelState.trafficState
 
     private val _apps = MutableStateFlow<List<InstalledApp>>(emptyList())
     val apps: StateFlow<List<InstalledApp>> = _apps.asStateFlow()
@@ -154,17 +155,28 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         return newProfile.id
     }
 
-    fun importFromLink(rawInput: String): Result<TunnelProfile> {
-        val result = LinkParser.parseShareLink(rawInput)
-        result.onSuccess { imported ->
+    fun importFromLinks(rawInput: String): Result<Int> {
+        val result = LinkParser.parseShareLinks(rawInput)
+        return result.map { imported ->
             updateConfig { cfg ->
                 cfg.copy(
                     profiles = cfg.profiles + imported,
-                    activeProfileId = imported.id
+                    activeProfileId = imported.last().id
                 )
             }
+            imported.size
         }
-        return result
+    }
+
+    fun quickUpdateBugSni(value: String) {
+        val active = _config.value.activeProfile() ?: return
+        val trimmed = value.trim()
+        updateProfile(active.id) { p ->
+            when (p.mode) {
+                TunnelMode.XRAY -> p.copy(xray = p.xray.copy(sni = trimmed, host = trimmed))
+                TunnelMode.SSH -> p.copy(ssh = p.ssh.copy(sni = trimmed, wsHost = trimmed))
+            }
+        }
     }
 
     fun deleteProfile(profileId: String) = updateConfig { cfg ->

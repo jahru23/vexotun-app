@@ -15,19 +15,38 @@ object LinkParser {
     private val linkRegex = Regex("""(vmess|vless|trojan|ss)://\S+""", RegexOption.IGNORE_CASE)
     private val json = Json { ignoreUnknownKeys = true }
 
+    fun parseShareLinks(rawInput: String): Result<List<TunnelProfile>> {
+        val matches = linkRegex.findAll(rawInput).map { it.value.trim() }.toList()
+        if (matches.isEmpty()) {
+            return Result.failure(IllegalArgumentException("Link tidak ditemukan. Gunakan format vmess://, vless://, trojan://, atau ss://"))
+        }
+        val parsed = mutableListOf<TunnelProfile>()
+        var lastError: Throwable? = null
+        for (link in matches) {
+            val res = parseSingleLink(link)
+            res.onSuccess { parsed.add(it) }
+                .onFailure { lastError = it }
+        }
+        return if (parsed.isNotEmpty()) {
+            Result.success(parsed)
+        } else {
+            Result.failure(lastError ?: IllegalArgumentException("Semua link tidak valid"))
+        }
+    }
+
     fun parseShareLink(rawInput: String): Result<TunnelProfile> {
         val match = linkRegex.find(rawInput.trim())
             ?: return Result.failure(IllegalArgumentException("Link tidak ditemukan. Gunakan format vmess://, vless://, trojan://, atau ss://"))
+        return parseSingleLink(match.value.trim())
+    }
 
-        val link = match.value.trim()
-        return runCatching {
-            when {
-                link.startsWith("vmess://", ignoreCase = true) -> parseVmess(link.substring(8))
-                link.startsWith("vless://", ignoreCase = true) -> parseUriBased(link, XrayProtocol.VLESS)
-                link.startsWith("trojan://", ignoreCase = true) -> parseUriBased(link, XrayProtocol.TROJAN)
-                link.startsWith("ss://", ignoreCase = true) -> parseShadowsocks(link.substring(5))
-                else -> error("Protokol tidak didukung")
-            }
+    private fun parseSingleLink(link: String): Result<TunnelProfile> = runCatching {
+        when {
+            link.startsWith("vmess://", ignoreCase = true) -> parseVmess(link.substring(8))
+            link.startsWith("vless://", ignoreCase = true) -> parseUriBased(link, XrayProtocol.VLESS)
+            link.startsWith("trojan://", ignoreCase = true) -> parseUriBased(link, XrayProtocol.TROJAN)
+            link.startsWith("ss://", ignoreCase = true) -> parseShadowsocks(link.substring(5))
+            else -> error("Protokol tidak didukung")
         }
     }
 

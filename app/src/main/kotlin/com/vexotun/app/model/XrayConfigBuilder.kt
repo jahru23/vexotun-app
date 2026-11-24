@@ -9,11 +9,50 @@ import kotlinx.serialization.json.put
 
 object XrayConfigBuilder {
 
-    fun buildJson(profile: XrayProfile): String {
+    fun buildJson(
+        profile: XrayProfile,
+        dnsServer: String = "8.8.8.8",
+        bypassLan: Boolean = true
+    ): String {
         val outbound = buildOutbound(profile)
+        val effectiveDns = dnsServer.trim().ifBlank { "8.8.8.8" }
         val root = buildJsonObject {
             put("log", buildJsonObject { put("loglevel", "error") })
-            put("outbounds", buildJsonArray { add(outbound) })
+            put("dns", buildJsonObject {
+                put("queryStrategy", "UseIPv4")
+                put("servers", buildJsonArray {
+                    add(JsonPrimitive(effectiveDns))
+                    if (effectiveDns != "1.1.1.1") add(JsonPrimitive("1.1.1.1"))
+                })
+            })
+            put("outbounds", buildJsonArray {
+                add(outbound)
+                add(buildJsonObject {
+                    put("tag", "direct")
+                    put("protocol", "freedom")
+                    put("settings", buildJsonObject {
+                        put("domainStrategy", "AsIs")
+                    })
+                })
+            })
+            if (bypassLan) {
+                put("routing", buildJsonObject {
+                    put("domainStrategy", "IPIfNonMatch")
+                    put("rules", buildJsonArray {
+                        add(buildJsonObject {
+                            put("type", "field")
+                            put("ip", buildJsonArray {
+                                add(JsonPrimitive("10.0.0.0/8"))
+                                add(JsonPrimitive("172.16.0.0/12"))
+                                add(JsonPrimitive("192.168.0.0/16"))
+                                add(JsonPrimitive("127.0.0.0/8"))
+                                add(JsonPrimitive("169.254.0.0/16"))
+                            })
+                            put("outboundTag", "direct")
+                        })
+                    })
+                })
+            }
         }
         return root.toString()
     }
@@ -85,6 +124,15 @@ object XrayConfigBuilder {
                 put("tlsSettings", buildJsonObject {
                     put("serverName", effectiveSni)
                     put("allowInsecure", p.allowInsecure)
+                    put("fingerprint", "chrome")
+                    val alpnList = when (p.network) {
+                        XrayTransport.GRPC -> listOf("h2")
+                        XrayTransport.WS, XrayTransport.HTTPUPGRADE -> listOf("http/1.1")
+                        XrayTransport.TCP -> listOf("h2", "http/1.1")
+                    }
+                    put("alpn", buildJsonArray {
+                        alpnList.forEach { add(JsonPrimitive(it)) }
+                    })
                 })
             }
 
@@ -130,6 +178,8 @@ object XrayConfigBuilder {
                 put("mux", buildJsonObject {
                     put("enabled", true)
                     put("concurrency", 8)
+                    put("xudpConcurrency", 8)
+                    put("xudpProxyUDP443", "reject")
                 })
             }
         }
