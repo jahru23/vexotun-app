@@ -12,7 +12,7 @@ object XrayConfigBuilder {
     fun buildJson(profile: XrayProfile): String {
         val outbound = buildOutbound(profile)
         val root = buildJsonObject {
-            put("log", buildJsonObject { put("loglevel", "warning") })
+            put("log", buildJsonObject { put("loglevel", "error") })
             put("outbounds", buildJsonArray { add(outbound) })
         }
         return root.toString()
@@ -113,13 +113,25 @@ object XrayConfigBuilder {
                     // Default raw TCP
                 }
             }
+
+            put("sockopt", buildJsonObject {
+                put("tcpNoDelay", true)
+                put("tcpKeepAliveInterval", 30)
+            })
         }
 
+        val useMux = p.flow.isBlank() && p.network != XrayTransport.GRPC
         return buildJsonObject {
             put("tag", "proxy")
             put("protocol", p.protocol.wireValue)
             put("settings", settings)
             put("streamSettings", streamSettings)
+            if (useMux) {
+                put("mux", buildJsonObject {
+                    put("enabled", true)
+                    put("concurrency", 8)
+                })
+            }
         }
     }
 }

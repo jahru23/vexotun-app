@@ -99,7 +99,7 @@ data class TunnelProfile(
 data class VexotunConfig(
     val profiles: List<TunnelProfile> = emptyList(),
     val activeProfileId: String = "",
-    val mtu: Int = 1500,
+    val mtu: Int = 1420,
     val socksPort: Int = 10808,
     val dnsServer: String = "8.8.8.8",
     val splitMode: SplitTunnelMode = SplitTunnelMode.ALL_APPS,

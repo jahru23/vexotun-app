@@ -11,8 +11,8 @@ android {
     applicationId = "com.vexotun.app"
     minSdk = 24
     targetSdk = 35
-    versionCode = 3
-    versionName = "1.2.0"
+    versionCode = 4
+    versionName = "1.2.1"
   }
 
   signingConfigs {
@@ -102,11 +102,6 @@ dependencies {
   androidTestImplementation(libs.androidx.test.ext.junit)
   androidTestImplementation(libs.androidx.test.runner)
   androidTestImplementation(libs.androidx.test.espresso.core)
-
-  // Navigation
-  implementation(libs.androidx.navigation3.ui)
-  implementation(libs.androidx.navigation3.runtime)
-  implementation(libs.androidx.lifecycle.viewmodel.navigation3)
 
   // Tunnel Core AAR (built via gomobile bind)
   implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))

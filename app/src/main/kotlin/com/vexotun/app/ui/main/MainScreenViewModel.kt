@@ -53,7 +53,12 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     init {
         logDeviceAndNetworkInfo()
-        loadInstalledApps()
+    }
+
+    fun ensureAppsLoaded() {
+        if (_apps.value.isEmpty()) {
+            loadInstalledApps()
+        }
     }
 
     private fun logDeviceAndNetworkInfo() {

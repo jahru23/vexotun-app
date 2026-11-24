@@ -33,5 +33,14 @@ func newProtectedDialer(protector SocketProtector, timeout time.Duration) *net.D
 
 func dialProtectedTCP(ctx context.Context, protector SocketProtector, addr string, timeout time.Duration) (net.Conn, error) {
 	d := newProtectedDialer(protector, timeout)
-	return d.DialContext(ctx, "tcp", addr)
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
+	return conn, nil
 }

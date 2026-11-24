@@ -348,12 +348,15 @@ fun MainScreen(
                             )
                         }
                     }
-                    AppPage.APPS -> SplitTunnelPage(
-                        config = config,
-                        apps = apps,
-                        onSplitModeChange = viewModel::setSplitMode,
-                        onTogglePackage = viewModel::toggleSplitPackage
-                    )
+                    AppPage.APPS -> {
+                        LaunchedEffect(Unit) { viewModel.ensureAppsLoaded() }
+                        SplitTunnelPage(
+                            config = config,
+                            apps = apps,
+                            onSplitModeChange = viewModel::setSplitMode,
+                            onTogglePackage = viewModel::toggleSplitPackage
+                        )
+                    }
                     AppPage.SETTINGS -> SettingsPage(
                         config = config,
                         onUpdateConfig = viewModel::updateConfig

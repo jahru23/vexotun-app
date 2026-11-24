@@ -17,6 +17,13 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+var sshCopyBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 64*1024)
+		return &buf
+	},
+}
+
 type SSHConfig struct {
 	Host       string `json:"host"`
 	Port       int    `json:"port"`
@@ -338,6 +345,10 @@ func (e *sshEngine) handleSocks5(clientConn net.Conn) {
 	}
 	defer remoteConn.Close()
 
+	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+	}
+
 	if _, err := clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
 		return
 	}
@@ -346,12 +357,16 @@ func (e *sshEngine) handleSocks5(clientConn net.Conn) {
 	copyWg.Add(2)
 	go func() {
 		defer copyWg.Done()
-		n, _ := io.Copy(remoteConn, clientConn)
+		bufPtr := sshCopyBufPool.Get().(*[]byte)
+		defer sshCopyBufPool.Put(bufPtr)
+		n, _ := io.CopyBuffer(remoteConn, clientConn, *bufPtr)
 		bytesUp.Add(n)
 	}()
 	go func() {
 		defer copyWg.Done()
-		n, _ := io.Copy(clientConn, remoteConn)
+		bufPtr := sshCopyBufPool.Get().(*[]byte)
+		defer sshCopyBufPool.Put(bufPtr)
+		n, _ := io.CopyBuffer(clientConn, remoteConn, *bufPtr)
 		bytesDown.Add(n)
 	}()
 	copyWg.Wait()

@@ -122,7 +122,8 @@ func ensureSocksInbound(rawJSON string, socksPort int) (string, error) {
 			},
 			"sniffing": map[string]any{
 				"enabled":      true,
-				"destOverride": []string{"http", "tls"},
+				"destOverride": []string{"http", "tls", "quic"},
+				"routeOnly":    true,
 			},
 		}
 		inbounds = append([]any{socksInbound}, inbounds...)

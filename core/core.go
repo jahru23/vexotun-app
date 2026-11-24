@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -43,6 +44,9 @@ func Start(tunFd int32, configJSON string, protector SocketProtector, logger Log
 	if isRunning {
 		return fmt.Errorf("tunnel is already running")
 	}
+
+	debug.SetMemoryLimit(96 << 20)
+	debug.SetGCPercent(60)
 
 	setLogHandler(logger)
 	resetTraffic()
