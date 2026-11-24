@@ -6,7 +6,7 @@ plugins {
 
 android {
   namespace = "com.vexotun.app"
-  compileSdk = 35
+  compileSdk = 36
   defaultConfig {
     applicationId = "com.vexotun.app"
     minSdk = 24
