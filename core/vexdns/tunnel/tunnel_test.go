@@ -353,3 +353,50 @@ func TestStatelessProbeOverUDP(t *testing.T) {
 		t.Fatalf("expected no response for unauthenticated probe")
 	}
 }
+
+func TestStripedCooldownSkipsDeadResolver(t *testing.T) {
+	priv, err := vxcrypto.GeneratePrivkey()
+	if err != nil {
+		t.Fatalf("GeneratePrivkey: %v", err)
+	}
+	pub, err := vxcrypto.PubkeyFromPrivkey(priv)
+	if err != nil {
+		t.Fatalf("PubkeyFromPrivkey: %v", err)
+	}
+	domain, err := dnswire.ParseName("t.prime.biz.id")
+	if err != nil {
+		t.Fatalf("ParseName: %v", err)
+	}
+	echoLn := startEchoUpstream(t)
+	srv := startTestServer(t, domain, echoLn.Addr().String(), priv, pub)
+
+	// Create a blackhole UDP socket that silently drops all packets.
+	blackhole, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen blackhole: %v", err)
+	}
+	defer blackhole.Close()
+
+	cli, err := DialClient(context.Background(), ClientConfig{
+		DNSServerAddrs: []string{srv.LocalUDPAddr().String(), blackhole.LocalAddr().String()},
+		Domain:         domain,
+		Pubkey:         pub,
+		QType:          dnswire.RRTypeTXT,
+		DownBudget:     1200,
+	})
+	if err != nil {
+		t.Fatalf("DialClient with dead secondary: %v", err)
+	}
+	defer cli.Close()
+
+	verifyEchoOverClient(t, cli, 24*1024)
+	// Wait briefly if needed for inflight expiry on the blackhole queries.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cli.targets[1].cooldownUntilNs.Load() > 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("expected blackhole target to enter cooldown after consecutive misses (misses=%d)", cli.targets[1].consecMisses.Load())
+}

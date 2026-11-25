@@ -275,7 +275,7 @@ func (e *sshEngine) Alive() bool {
 		return false
 	}
 	if hc, ok := e.transportConn.(interface{ IsHealthy(time.Duration) bool }); ok {
-		if !hc.IsHealthy(20 * time.Second) {
+		if !hc.IsHealthy(12 * time.Second) {
 			return false
 		}
 	}
@@ -298,8 +298,9 @@ func (e *sshEngine) waitExitLoop() {
 
 func (e *sshEngine) keepAliveLoop() {
 	defer e.wg.Done()
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	ticks := 0
 
 	for {
 		select {
@@ -309,7 +310,7 @@ func (e *sshEngine) keepAliveLoop() {
 			if e.dead.Load() {
 				return
 			}
-			if hc, ok := e.transportConn.(interface{ IsHealthy(time.Duration) bool }); ok && !hc.IsHealthy(20 * time.Second) {
+			if hc, ok := e.transportConn.(interface{ IsHealthy(time.Duration) bool }); ok && !hc.IsHealthy(12 * time.Second) {
 				if e.ctx.Err() == nil && !e.dead.Swap(true) {
 					logMsg("WARN", "Jalur SlowDNS terhenti (timeout), memutus sesi untuk reconnect...")
 				}
@@ -320,6 +321,10 @@ func (e *sshEngine) keepAliveLoop() {
 					_ = e.listener.Close()
 				}
 				return
+			}
+			ticks++
+			if ticks%3 != 0 {
+				continue
 			}
 
 			// Note: Dropbear does not reply to global keepalive requests when wantReply=true

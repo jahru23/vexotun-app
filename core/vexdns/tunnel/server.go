@@ -21,7 +21,7 @@ import (
 const (
 	defaultIdleTimeout = 2 * time.Minute
 	defaultKeepAlive   = 10 * time.Second
-	defaultPollHold    = 600 * time.Millisecond
+	defaultPollHold    = 320 * time.Millisecond
 	defaultCoalesce    = 2 * time.Millisecond
 	responseTTL        = 60
 )
@@ -360,7 +360,7 @@ func (s *Server) dispatchSlot(slot *querySlot) {
 	r := &clientResponder{
 		server: s,
 		addr:   slot.clientAddr,
-		slotCh: make(chan *querySlot, 64),
+		slotCh: make(chan *querySlot, 128),
 		stopCh: make(chan struct{}),
 	}
 	actual, loaded := s.responders.LoadOrStore(key, r)
@@ -561,8 +561,8 @@ func (s *Server) computeSessionMTU(peerKey string) int {
 func (s *Server) serveSession(conn *kcp.UDPSession) error {
 	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
 	rw, err := vxcrypto.WrapServer(conn, s.cfg.Privkey)
-	_ = conn.SetDeadline(time.Time{})
 	if err != nil {
+		_ = conn.SetDeadline(time.Time{})
 		return err
 	}
 	defer rw.Close()

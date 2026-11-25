@@ -41,8 +41,16 @@ type ClientConfig struct {
 }
 
 type udpTarget struct {
-	conn net.PacketConn
-	addr net.Addr
+	conn            net.PacketConn
+	addr            net.Addr
+	consecMisses    atomic.Int64
+	cooldownUntilNs atomic.Int64
+	lastReplyNs     atomic.Int64
+}
+
+type inflightEntry struct {
+	sentAt    time.Time
+	targetIdx int
 }
 
 // Client manages one authenticated KCP + Noise_NK + smux session over DNS.
@@ -51,7 +59,7 @@ type Client struct {
 	clientID [4]byte
 	addr     protocol.ClientAddr
 
-	targets    []udpTarget
+	targets    []*udpTarget
 	targetSeq  atomic.Uint64
 	ttConn     *QueuePacketConn
 	kcpConn    *kcp.UDPSession
@@ -62,7 +70,7 @@ type Client struct {
 	txNotify     chan struct{}
 
 	inflightMu sync.Mutex
-	inflight   map[uint16]time.Time
+	inflight   map[uint16]inflightEntry
 
 	closeOnce sync.Once
 	closeCh   chan struct{}
@@ -98,16 +106,19 @@ func DialClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if cfg.KCPWindow <= 0 {
 		cfg.KCPWindow = 512
 	}
-	if cfg.MaxInFlight <= 0 {
-		cfg.MaxInFlight = 56
-	}
-
 	addrsRaw := cfg.DNSServerAddrs
 	if len(addrsRaw) == 0 && cfg.DNSServerAddr != "" {
 		addrsRaw = []string{cfg.DNSServerAddr}
 	}
 	if len(addrsRaw) == 0 {
 		return nil, errors.New("tunnel: no DNS server address specified")
+	}
+	if cfg.MaxInFlight <= 0 {
+		if len(addrsRaw) >= 2 {
+			cfg.MaxInFlight = 72
+		} else {
+			cfg.MaxInFlight = 64
+		}
 	}
 
 	openPacket := cfg.ListenPacket
@@ -117,7 +128,7 @@ func DialClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		}
 	}
 
-	targets := make([]udpTarget, 0, len(addrsRaw))
+	targets := make([]*udpTarget, 0, len(addrsRaw))
 	for _, rawAddr := range addrsRaw {
 		rAddr, err := net.ResolveUDPAddr("udp", rawAddr)
 		if err != nil {
@@ -137,7 +148,7 @@ func DialClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 			}
 			return nil, fmt.Errorf("tunnel: listen %s for %s: %w", netFam, rawAddr, err)
 		}
-		targets = append(targets, udpTarget{conn: pc, addr: rAddr})
+		targets = append(targets, &udpTarget{conn: pc, addr: rAddr})
 	}
 	closeTargets := func() {
 		for _, t := range targets {
@@ -215,13 +226,15 @@ func DialClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		kcpConn:      kcpConn,
 		maxUpPayload: maxRawQ - protocol.NativeHeaderLen,
 		txNotify:     txNotify,
-		inflight:     make(map[uint16]time.Time, 64),
+		inflight:     make(map[uint16]inflightEntry, 96),
 		closeCh:      make(chan struct{}),
 	}
-	c.LastValidReplyNs.Store(time.Now().UnixNano())
+	nowNs := time.Now().UnixNano()
+	c.LastValidReplyNs.Store(nowNs)
 
-	for _, t := range targets {
-		go c.dnsRecvLoop(t.conn)
+	for i := range c.targets {
+		c.targets[i].lastReplyNs.Store(nowNs)
+		go c.dnsRecvLoop(i, c.targets[i].conn)
 	}
 	go c.dnsPollLoop()
 
@@ -233,8 +246,8 @@ func DialClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	}
 	_ = kcpConn.SetDeadline(time.Now().Add(handshakeTimeout))
 	noiseRW, err := vxcrypto.WrapClient(kcpConn, cfg.Pubkey)
-	_ = kcpConn.SetDeadline(time.Time{})
 	if err != nil {
+		_ = kcpConn.SetDeadline(time.Time{})
 		_ = c.Close()
 		return nil, fmt.Errorf("tunnel: noise handshake (%s mtu=%d): %w", dnswire.RecordTypeString(cfg.QType), sessionMTU, err)
 	}
@@ -356,7 +369,7 @@ func (c *Client) Close() error {
 	return nil
 }
 
-func (c *Client) dnsRecvLoop(conn net.PacketConn) {
+func (c *Client) dnsRecvLoop(targetIdx int, conn net.PacketConn) {
 	buf := make([]byte, 4096)
 	for {
 		n, _, err := conn.ReadFrom(buf)
@@ -378,6 +391,11 @@ func (c *Client) dnsRecvLoop(conn net.PacketConn) {
 		c.ValidReplies.Add(1)
 		c.ConsecTimeouts.Store(0)
 		c.LastValidReplyNs.Store(now)
+		if targetIdx >= 0 && targetIdx < len(c.targets) {
+			c.targets[targetIdx].consecMisses.Store(0)
+			c.targets[targetIdx].cooldownUntilNs.Store(0)
+			c.targets[targetIdx].lastReplyNs.Store(now)
+		}
 
 		if len(msg.Answer) == 0 {
 			c.EmptyReplies.Add(1)
@@ -405,14 +423,27 @@ func (c *Client) dnsRecvLoop(conn net.PacketConn) {
 	}
 }
 
+const (
+	inflightExpire   = 900 * time.Millisecond
+	targetMissLimit  = 6
+	targetCooldown   = 15 * time.Second
+)
+
 func (c *Client) activeInFlight() (int, int) {
 	now := time.Now()
+	nowNs := now.UnixNano()
 	expired := 0
 	c.inflightMu.Lock()
-	for id, sentAt := range c.inflight {
-		if now.Sub(sentAt) > 450*time.Millisecond {
+	for id, entry := range c.inflight {
+		if now.Sub(entry.sentAt) > inflightExpire {
 			delete(c.inflight, id)
 			expired++
+			if entry.targetIdx >= 0 && entry.targetIdx < len(c.targets) {
+				misses := c.targets[entry.targetIdx].consecMisses.Add(1)
+				if len(c.targets) > 1 && misses >= targetMissLimit {
+					c.targets[entry.targetIdx].cooldownUntilNs.Store(nowNs + int64(targetCooldown))
+				}
+			}
 		}
 	}
 	n := len(c.inflight)
@@ -420,11 +451,32 @@ func (c *Client) activeInFlight() (int, int) {
 	return n, expired
 }
 
+func (c *Client) pickTargetIdx() int {
+	n := len(c.targets)
+	if n <= 1 {
+		return 0
+	}
+	nowNs := time.Now().UnixNano()
+	start := int((c.targetSeq.Add(1) - 1) % uint64(n))
+	for offset := 0; offset < n; offset++ {
+		idx := (start + offset) % n
+		if c.targets[idx].cooldownUntilNs.Load() <= nowNs {
+			return idx
+		}
+	}
+	// All targets in cooldown: reset cooldowns and fall back to round-robin.
+	for i := range c.targets {
+		c.targets[i].cooldownUntilNs.Store(0)
+		c.targets[i].consecMisses.Store(0)
+	}
+	return start
+}
+
 func (c *Client) dnsPollLoop() {
 	var msgID uint16 = 1
 	idleWait := 12 * time.Millisecond
 	const maxIdleWait = 280 * time.Millisecond
-	curWindow := 24
+	curWindow := 32
 	if c.cfg.MaxInFlight < curWindow {
 		curWindow = c.cfg.MaxInFlight
 	}
@@ -459,11 +511,11 @@ func (c *Client) dnsPollLoop() {
 		if err != nil {
 			return
 		}
+		tIdx := c.pickTargetIdx()
 		c.inflightMu.Lock()
-		c.inflight[msgID] = time.Now()
+		c.inflight[msgID] = inflightEntry{sentAt: time.Now(), targetIdx: tIdx}
 		c.inflightMu.Unlock()
 		c.SentQueries.Add(1)
-		tIdx := int((c.targetSeq.Add(1) - 1) % uint64(len(c.targets)))
 		tgt := c.targets[tIdx]
 		_, _ = tgt.conn.WriteTo(wire, tgt.addr)
 	}

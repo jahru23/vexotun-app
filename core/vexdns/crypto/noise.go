@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"time"
 
 	"github.com/flynn/noise"
 )
@@ -143,6 +144,9 @@ func WrapClient(rwc io.ReadWriteCloser, serverPubkey []byte) (io.ReadWriteCloser
 	if len(payload) != 0 {
 		return nil, errors.New("crypto: unexpected server noise handshake payload")
 	}
+	if dc, ok := rwc.(interface{ SetDeadline(time.Time) error }); ok {
+		_ = dc.SetDeadline(time.Time{})
+	}
 	return newNoiseSocket(rwc, recvCipher, sendCipher), nil
 }
 
@@ -181,6 +185,9 @@ func WrapServer(rwc io.ReadWriteCloser, serverPrivkey []byte) (io.ReadWriteClose
 	}
 	if err := writeNoiseFrame(rwc, respMsg); err != nil {
 		return nil, err
+	}
+	if dc, ok := rwc.(interface{ SetDeadline(time.Time) error }); ok {
+		_ = dc.SetDeadline(time.Time{})
 	}
 	return newNoiseSocket(rwc, recvCipher, sendCipher), nil
 }
