@@ -69,8 +69,8 @@ func Prepare(configJSON string, protector SocketProtector, logger LogHandler) er
 		stateMu.Unlock()
 	}
 
-	debug.SetMemoryLimit(96 << 20)
-	debug.SetGCPercent(60)
+	debug.SetMemoryLimit(48 << 20)
+	debug.SetGCPercent(40)
 
 	setLogHandler(logger)
 	resetTraffic()

@@ -438,6 +438,10 @@ class VexotunVpnService : VpnService() {
         super.onRevoke()
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Keep the foreground VPN service alive when the UI task is backgrounded or swiped away.
+    }
+
     override fun onDestroy() {
         cleanupResources()
         serviceScope.cancel()
@@ -482,6 +486,7 @@ class VexotunVpnService : VpnService() {
             .setContentText(statusText)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(openIntent)
             .addAction(0, "Putuskan", stopIntent)
             .build()
