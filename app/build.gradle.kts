@@ -11,8 +11,8 @@ android {
     applicationId = "com.vexotun.app"
     minSdk = 24
     targetSdk = 35
-    versionCode = 20
-    versionName = "1.7.3"
+    versionCode = 21
+    versionName = "1.7.4"
   }
 
   signingConfigs {
@@ -59,8 +59,16 @@ android {
   }
 
   packaging {
+    jniLibs {
+      useLegacyPackaging = true
+    }
     resources {
-      excludes += "/META-INF/{AL2.0,LGPL2.1}"
+      excludes += listOf(
+        "/META-INF/{AL2.0,LGPL2.1}",
+        "/META-INF/**/LICENSE.txt",
+        "/META-INF/*.version",
+        "DebugProbesKt.bin"
+      )
     }
   }
 }
