@@ -64,11 +64,18 @@ class VexotunVpnService : VpnService() {
     private var isStopping: Boolean = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        TunnelState.init(this)
         when (intent?.action) {
             ACTION_STOP -> {
                 isStopping = true
                 stopTunnel()
                 return START_NOT_STICKY
+            }
+            ACTION_RECONNECT -> {
+                isStopping = false
+                startForegroundNotification("Menyambung ulang...")
+                reconnectTunnel()
+                return START_STICKY
             }
             ACTION_START, null -> {
                 isStopping = false
@@ -79,6 +86,18 @@ class VexotunVpnService : VpnService() {
             }
         }
         return START_NOT_STICKY
+    }
+
+    private fun reconnectTunnel() {
+        startJob?.cancel()
+        startJob = null
+        serviceScope.launch {
+            TunnelState.appendLog("INFO", "Menyambung ulang...")
+            cleanupResources()
+            if (isStopping) return@launch
+            val config = ConfigStore(this@VexotunVpnService).load()
+            startTunnel(config)
+        }
     }
 
     private fun startTunnel(config: VexotunConfig) {
@@ -107,7 +126,7 @@ class VexotunVpnService : VpnService() {
                     "SSH"
                 }
                 TunnelState.setStatus(ConnectionStatus.CONNECTING, "Menghubungkan ke ${profile.name}...")
-                TunnelState.appendLog("INFO", "Connecting $protoLabel")
+                TunnelState.appendLog("INFO", "Menghubungkan ${profile.name} ($protoLabel)...")
 
                 val xrayPayload = if (profile.mode == TunnelMode.XRAY && profile.xray.useCustomPayload) {
                     CoreXrayPayload(
@@ -174,7 +193,7 @@ class VexotunVpnService : VpnService() {
                     TunnelState.appendLog(level, message)
                 }
 
-                TunnelState.appendLog("INFO", "Memulai ${profile.mode.label}.")
+                TunnelState.appendLog("DEBUG", "Memulai ${profile.mode.label}.")
                 Core.prepare(json.encodeToString(coreConfig), protector, logger)
 
                 if (isStopping) {
@@ -217,7 +236,7 @@ class VexotunVpnService : VpnService() {
 
                 val pfd = builder.establish()
                     ?: throw IllegalStateException("Gagal membuat interface VPN")
-                TunnelState.appendLog("INFO", "VPN siap.")
+                TunnelState.appendLog("DEBUG", "VPN interface established")
 
                 // Detach FD so tun2socks owns and closes it without triggering Android fdsan SIGABRT.
                 detachedFd = pfd.detachFd()
@@ -225,9 +244,8 @@ class VexotunVpnService : VpnService() {
                 Core.attachTun(detachedFd)
                 detachedFd = -1
 
-                TunnelState.appendLog("INFO", "Engine aktif.")
-                TunnelState.appendLog("INFO", "Rute VPN aktif.")
-                TunnelState.appendLog("INFO", "Tersambung.")
+                TunnelState.appendLog("DEBUG", "Engine & VPN routes active")
+                TunnelState.appendLog("INFO", "Terhubung • ${profile.name}")
 
                 TunnelState.setStatus(ConnectionStatus.CONNECTED, "Terhubung • ${profile.name}")
                 updateNotification("Terhubung • ${profile.name}")
@@ -242,9 +260,13 @@ class VexotunVpnService : VpnService() {
                 if (detachedFd >= 0 && !Core.isRunning()) {
                     runCatching { ParcelFileDescriptor.adoptFd(detachedFd).close() }
                 }
-                val errMsg = t.message ?: "Gagal menghubungkan tunnel"
-                TunnelState.appendLog("ERROR", errMsg)
-                TunnelState.setStatus(ConnectionStatus.ERROR, errMsg)
+                val rawErr = t.message.orEmpty()
+                val friendlyErr = friendlyTunnelError(rawErr)
+                if (rawErr.isNotBlank() && rawErr != friendlyErr) {
+                    TunnelState.appendLog("DEBUG", "Detail error: $rawErr")
+                }
+                TunnelState.appendLog("ERROR", friendlyErr)
+                TunnelState.setStatus(ConnectionStatus.ERROR, friendlyErr)
                 cleanupResources()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -310,7 +332,7 @@ class VexotunVpnService : VpnService() {
         startJob?.cancel()
         startJob = null
         serviceScope.launch {
-            TunnelState.appendLog("INFO", "Memutus koneksi...")
+            TunnelState.appendLog("DEBUG", "Memutus koneksi...")
             cleanupResources()
             TunnelState.setStatus(ConnectionStatus.DISCONNECTED, "Terputus")
             TunnelState.appendLog("INFO", "Koneksi terputus.")
@@ -482,8 +504,27 @@ class VexotunVpnService : VpnService() {
     companion object {
         const val ACTION_START = "com.vexotun.app.START_VPN"
         const val ACTION_STOP = "com.vexotun.app.STOP_VPN"
+        const val ACTION_RECONNECT = "com.vexotun.app.RECONNECT_VPN"
         private const val CHANNEL_ID = "vexotun_vpn_channel"
         private const val NOTIFICATION_ID = 1001
+
+        fun friendlyTunnelError(raw: String): String {
+            val low = raw.lowercase()
+            return when {
+                low.isBlank() -> "Gagal menghubungkan tunnel"
+                "unable to authenticate" in low || "authentication failed" in low || "permission denied" in low ->
+                    "Autentikasi gagal: periksa username/password atau masa aktif akun"
+                "no reachable dns tunnel" in low || "tidak mendapat respons" in low ->
+                    "SlowDNS tidak merespons: coba pindah resolver atau tipe DNS (mis. AAAA)"
+                "tls" in low || "handshake" in low || "certificate" in low || "sni" in low ->
+                    "Handshake TLS/SSL gagal: periksa SNI atau port server"
+                "i/o timeout" in low || "deadline exceeded" in low || "timed out" in low ->
+                    "Koneksi timeout: server atau jaringan tidak merespons"
+                "connection refused" in low || "no route to host" in low || "network is unreachable" in low ->
+                    "Server tidak terjangkau atau port sedang tidak aktif"
+                else -> raw
+            }
+        }
 
         fun start(context: Context) {
             val intent = Intent(context, VexotunVpnService::class.java).apply {
@@ -534,6 +575,17 @@ class VexotunVpnService : VpnService() {
                 action = ACTION_STOP
             }
             context.startService(intent)
+        }
+
+        fun reconnect(context: Context) {
+            val intent = Intent(context, VexotunVpnService::class.java).apply {
+                action = ACTION_RECONNECT
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
         }
     }
 }

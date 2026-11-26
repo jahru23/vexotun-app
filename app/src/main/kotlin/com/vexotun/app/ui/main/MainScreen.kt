@@ -1447,6 +1447,23 @@ private fun TunnelPage(
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             IconButton(
                                 onClick = {
+                                    val debugText = com.vexotun.app.vpn.TunnelState.readDebugLog()
+                                    val text = debugText.ifBlank {
+                                        runtime.logs.joinToString("\n") { "[${it.timestamp}] ${it.message}" }
+                                    }
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("vexotun_debug_logs", text))
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.BugReport,
+                                    contentDescription = "Salin Log Debug",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = {
                                     val text = runtime.logs.joinToString("\n") {
                                         "[${it.timestamp}] ${it.message}"
                                     }

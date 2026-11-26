@@ -77,7 +77,7 @@ func startXrayEngine(configJSON string, listenHost string, socksPort int, protec
 		return nil, fmt.Errorf("start Xray instance: %w", err)
 	}
 
-	logMsg("INFO", "Xray-core started (SOCKS5 on %s:%d)", listenHost, socksPort)
+	logMsg("DEBUG", "Xray-core started (SOCKS5 on %s:%d)", listenHost, socksPort)
 	return &xrayEngine{instance: inst}, nil
 }
 

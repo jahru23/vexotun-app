@@ -46,7 +46,7 @@ func startLocalHTTPProxy(listenHost string, httpPort int, socksPort int) (*local
 		}
 	}()
 
-	logMsg("INFO", "Hotspot HTTP proxy active on %s", addr)
+	logMsg("DEBUG", "Hotspot HTTP proxy active on %s", addr)
 	return p, nil
 }
 

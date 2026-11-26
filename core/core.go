@@ -95,7 +95,7 @@ func Prepare(configJSON string, protector SocketProtector, logger LogHandler) er
 		listenHost = "0.0.0.0"
 	}
 
-	logMsg("INFO", "Starting Vexotun core (mode=%s, mtu=%d, lan=%v)", cfg.Mode, cfg.MTU, cfg.AllowLan)
+	logMsg("DEBUG", "Starting Vexotun core (mode=%s, mtu=%d, lan=%v)", cfg.Mode, cfg.MTU, cfg.AllowLan)
 
 	var newSSH *sshEngine
 	var newXray *xrayEngine
@@ -205,7 +205,7 @@ func AttachTun(tunFd int32) error {
 	isRunning = true
 	stateMu.Unlock()
 
-	logMsg("INFO", "tun2socks started on fd://%d -> socks5://127.0.0.1:%d", tunFd, cfg.SocksPort)
+	logMsg("DEBUG", "tun2socks started on fd://%d -> socks5://127.0.0.1:%d", tunFd, cfg.SocksPort)
 	return nil
 }
 
@@ -242,7 +242,7 @@ func Stop() {
 		return
 	}
 
-	logMsg("INFO", "Stopping Vexotun core...")
+	logMsg("DEBUG", "Stopping Vexotun core...")
 	if wasRunning {
 		engine.Stop()
 	}
@@ -258,7 +258,7 @@ func Stop() {
 	if bridge != nil {
 		bridge.Stop()
 	}
-	logMsg("INFO", "Vexotun core stopped")
+	logMsg("DEBUG", "Vexotun core stopped")
 }
 
 // IsRunning returns whether the tunnel core is currently active.

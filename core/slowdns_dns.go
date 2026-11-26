@@ -223,7 +223,7 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 			if len(resp.Answer) > 0 {
 				ansType = resp.Answer[0].Type
 			}
-			logMsg("INFO", "SlowDNS recv %dB from %v (rcode=%d, ans=%d, type=%d)", n, addr, rcode, len(resp.Answer), ansType)
+			logMsg("DEBUG", "SlowDNS recv %dB from %v (rcode=%d, ans=%d, type=%d)", n, addr, rcode, len(resp.Answer), ansType)
 		}
 
 		payload := dnsResponsePayload(&resp, c.domain, c.rrType)

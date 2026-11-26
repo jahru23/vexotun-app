@@ -86,7 +86,7 @@ func injectHTTPPayload(conn net.Conn, payloadTemplate, targetHost string, target
 	}
 
 	firstLine := strings.TrimSpace(strings.SplitN(headerBuf.String(), "\n", 2)[0])
-	logMsg("INFO", "Proxy response: %s", firstLine)
+	logMsg("DEBUG", "Proxy response: %s", firstLine)
 
 	if !strings.Contains(firstLine, " 200 ") && !strings.Contains(firstLine, " 101 ") {
 		return nil, fmt.Errorf("proxy rejected tunnel: %s", firstLine)

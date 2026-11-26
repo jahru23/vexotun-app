@@ -58,7 +58,7 @@ func startXrayPayloadBridge(parentCtx context.Context, cfg XrayPayloadConfig, pr
 	b.wg.Add(1)
 	go b.acceptLoop()
 
-	logMsg("INFO", "Xray custom payload bridge active on 127.0.0.1:%d", b.port)
+	logMsg("DEBUG", "Xray custom payload bridge active on 127.0.0.1:%d", b.port)
 	return b, nil
 }
 

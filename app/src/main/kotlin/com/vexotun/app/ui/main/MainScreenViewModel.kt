@@ -8,6 +8,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
+import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import androidx.core.content.pm.PackageInfoCompat
 import androidx.lifecycle.AndroidViewModel
@@ -25,6 +26,7 @@ import com.vexotun.app.model.TunnelProfile
 import com.vexotun.app.model.VexotunConfig
 import com.vexotun.app.model.VxtCodec
 import com.vexotun.app.model.VxtLockInfo
+import com.vexotun.app.vpn.ConnectionStatus
 import com.vexotun.app.vpn.TunnelState
 import com.vexotun.app.vpn.VexotunVpnService
 import core.Core
@@ -84,6 +86,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun logDeviceAndNetworkInfo() {
         val ctx = getApplication<Application>()
+        TunnelState.init(ctx)
         val (versionName, versionCode) = runCatching {
             val info = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
             val name = info.versionName ?: "1.0.0"
@@ -105,12 +108,9 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
             else -> "Jaringan"
         }
-        val tm = ctx.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
-        val carrier = tm?.networkOperatorName?.trim().orEmpty()
+        val carrier = detectActiveDataCarrier(ctx)
         val networkLine = if (carrier.isNotEmpty() && transportLabel == "Seluler") {
-            "$carrier / $transportLabel"
-        } else if (carrier.isNotEmpty() && transportLabel == "WiFi") {
-            "$carrier / $transportLabel"
+            "$carrier • $transportLabel"
         } else {
             transportLabel
         }
@@ -123,14 +123,34 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         } ?: "-"
 
         TunnelState.ensureInitialLogs(
-            listOf(
-                "Vexotun $versionName ($versionCode)",
-                deviceLine,
-                osLine,
-                networkLine,
-                "IP $localIp"
+            messages = listOf(
+                "Vexotun $versionName • $networkLine"
+            ),
+            debugMessages = listOf(
+                "App: Vexotun $versionName ($versionCode)",
+                "Device: $deviceLine | $osLine",
+                "Network: $networkLine | Local IP: $localIp"
             )
         )
+    }
+
+    private fun detectActiveDataCarrier(ctx: Context): String {
+        val tm = ctx.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: return ""
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val dataSubId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                SubscriptionManager.getActiveDataSubscriptionId()
+            } else {
+                SubscriptionManager.getDefaultDataSubscriptionId()
+            }
+            if (dataSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                val subTm = tm.createForSubscriptionId(dataSubId)
+                val name = subTm.networkOperatorName?.trim().orEmpty()
+                if (name.isNotEmpty()) return name
+                val simName = subTm.simOperatorName?.trim().orEmpty()
+                if (simName.isNotEmpty()) return simName
+            }
+        }
+        return tm.networkOperatorName?.trim().orEmpty()
     }
 
     fun updateConfig(transform: (VexotunConfig) -> VexotunConfig) {
@@ -312,11 +332,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun reconnectVpn() {
-        viewModelScope.launch {
-            stopVpn()
-            delay(650L)
-            startVpn()
-        }
+        VexotunVpnService.reconnect(getApplication())
     }
 
     fun clearLogs() {
@@ -329,22 +345,27 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             val ms = withContext(Dispatchers.IO) {
                 val active = _config.value.activeProfile()
-                when (active?.mode) {
-                    TunnelMode.SSH -> {
-                        if (active.ssh.host.isNotBlank()) {
-                            Core.pingTCP(active.ssh.host.trim(), active.ssh.port, 3000)
-                        } else {
-                            Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
+                val connected = TunnelState.state.value.status == ConnectionStatus.CONNECTED
+                if (connected) {
+                    Core.pingSocksHTTP(_config.value.socksPort, "https://www.gstatic.com/generate_204", 5000)
+                } else {
+                    when (active?.mode) {
+                        TunnelMode.SSH -> {
+                            if (active.ssh.host.isNotBlank()) {
+                                Core.pingTCP(active.ssh.host.trim(), active.ssh.port, 3000)
+                            } else {
+                                Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
+                            }
                         }
-                    }
-                    TunnelMode.XRAY -> {
-                        if (active.xray.address.isNotBlank()) {
-                            Core.pingTCP(active.xray.address.trim(), active.xray.port, 3000)
-                        } else {
-                            Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
+                        TunnelMode.XRAY -> {
+                            if (active.xray.address.isNotBlank()) {
+                                Core.pingTCP(active.xray.address.trim(), active.xray.port, 3000)
+                            } else {
+                                Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
+                            }
                         }
+                        null -> Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
                     }
-                    null -> Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
                 }
             }
             TunnelState.setPing(if (ms >= 0) ms else null)

@@ -1,13 +1,16 @@
 package com.vexotun.app.vpn
 
+import android.content.Context
 import android.os.SystemClock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 enum class ConnectionStatus {
@@ -45,8 +48,36 @@ data class TrafficStatsState(
 )
 
 object TunnelState {
-    private const val MAX_LOGS = 250
+    private const val MAX_LOGS = 200
+    private const val MAX_DEBUG_FILE_BYTES = 512L * 1024L
     private val nextLogId = AtomicLong(1L)
+    private val logIoExecutor = Executors.newSingleThreadExecutor()
+
+    @Volatile
+    private var debugLogFile: File? = null
+
+    fun init(context: Context) {
+        if (debugLogFile != null) return
+        val dir = File(context.applicationContext.filesDir, "logs")
+        runCatching {
+            if (!dir.exists()) dir.mkdirs()
+            debugLogFile = File(dir, "vexotun-debug.log")
+        }
+    }
+
+    private fun writeDebugFile(level: String, message: String, timestamp: String) {
+        val file = debugLogFile ?: return
+        logIoExecutor.execute {
+            runCatching {
+                if (file.exists() && file.length() > MAX_DEBUG_FILE_BYTES) {
+                    val backup = File(file.parentFile, "vexotun-debug.log.1")
+                    if (backup.exists()) backup.delete()
+                    file.renameTo(backup)
+                }
+                file.appendText("[$timestamp] [$level] $message\n")
+            }
+        }
+    }
 
     private val _state = MutableStateFlow(VpnRuntimeState())
     val state: StateFlow<VpnRuntimeState> = _state.asStateFlow()
@@ -102,12 +133,18 @@ object TunnelState {
     }
 
     fun appendLog(level: String, message: String) {
-        when (level.uppercase()) {
+        val norm = level.uppercase(Locale.ROOT)
+        when (norm) {
             "ERROR" -> android.util.Log.e("Vexotun", message)
             "WARN" -> android.util.Log.w("Vexotun", message)
+            "DEBUG" -> android.util.Log.d("Vexotun", message)
             else -> android.util.Log.i("Vexotun", message)
         }
-        val entry = LogEntry(id = nextLogId.getAndIncrement(), level = level, message = message)
+        val ts = currentLogTime()
+        writeDebugFile(norm, message, ts)
+        if (norm == "DEBUG") return
+
+        val entry = LogEntry(id = nextLogId.getAndIncrement(), level = norm, message = message, timestamp = ts)
         _state.update { current ->
             val list = current.logs
             val updated = if (list.size >= MAX_LOGS) {
@@ -125,10 +162,19 @@ object TunnelState {
         }
     }
 
-    fun ensureInitialLogs(messages: List<String>) {
+    fun readDebugLog(): String {
+        val file = debugLogFile ?: return ""
+        return runCatching {
+            if (!file.exists()) "" else file.readText()
+        }.getOrElse { "" }
+    }
+
+    fun ensureInitialLogs(messages: List<String>, debugMessages: List<String> = emptyList()) {
+        val time = currentLogTime()
+        debugMessages.forEach { writeDebugFile("DEBUG", it, time) }
         _state.update { current ->
             if (current.logs.isNotEmpty()) return@update current
-            val time = currentLogTime()
+            messages.forEach { writeDebugFile("INFO", it, time) }
             current.copy(
                 logs = messages.map { msg ->
                     LogEntry(id = nextLogId.getAndIncrement(), level = "INFO", message = msg, timestamp = time)

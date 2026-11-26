@@ -111,7 +111,7 @@ func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string,
 	if isSlowDNS && cfg.Host == "" {
 		targetAddr = net.JoinHostPort(cfg.Nameserver, "22")
 	}
-	logMsg("INFO", "Authenticating SSH user %q on %s...", cfg.Username, targetAddr)
+	logMsg("DEBUG", "Authenticating SSH user %q on %s...", cfg.Username, targetAddr)
 	sshDone := make(chan struct{})
 	go func() {
 		select {
@@ -129,7 +129,7 @@ func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string,
 	}
 
 	client := ssh.NewClient(c, chans, reqs)
-	logMsg("INFO", "SSH connected successfully")
+	logMsg("DEBUG", "SSH connected successfully")
 
 	socksAddr := net.JoinHostPort(listenHost, strconv.Itoa(socksPort))
 	ln, err := net.Listen("tcp", socksAddr)
@@ -154,7 +154,7 @@ func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string,
 	go eng.keepAliveLoop()
 	go eng.acceptLoop()
 
-	logMsg("INFO", "Local SOCKS5 listening on %s", socksAddr)
+	logMsg("DEBUG", "Local SOCKS5 listening on %s", socksAddr)
 	return eng, nil
 }
 
@@ -169,7 +169,7 @@ func dialSSHTransport(ctx context.Context, cfg SSHConfig, protector SocketProtec
 
 	switch transport {
 	case "direct":
-		logMsg("INFO", "Dialing SSH direct: %s", sshAddr)
+		logMsg("DEBUG", "Dialing SSH direct: %s", sshAddr)
 		return dialProtectedTCP(ctx, protector, sshAddr, timeout)
 
 	case "http_proxy":
@@ -177,7 +177,7 @@ func dialSSHTransport(ctx context.Context, cfg SSHConfig, protector SocketProtec
 		if cfg.ProxyHost != "" && cfg.ProxyPort > 0 {
 			proxyAddr = net.JoinHostPort(cfg.ProxyHost, strconv.Itoa(cfg.ProxyPort))
 		}
-		logMsg("INFO", "Dialing HTTP Proxy %s -> %s", proxyAddr, sshAddr)
+		logMsg("DEBUG", "Dialing HTTP Proxy %s -> %s", proxyAddr, sshAddr)
 		rawConn, err := dialProtectedTCP(ctx, protector, proxyAddr, timeout)
 		if err != nil {
 			return nil, fmt.Errorf("dial proxy %s: %w", proxyAddr, err)
@@ -198,7 +198,7 @@ func dialSSHTransport(ctx context.Context, cfg SSHConfig, protector SocketProtec
 		if sni == "" {
 			sni = cfg.Host
 		}
-		logMsg("INFO", "Dialing SSL/TLS %s (SNI=%s)", dialAddr, sni)
+		logMsg("DEBUG", "Dialing SSL/TLS %s (SNI=%s)", dialAddr, sni)
 		rawConn, err := dialProtectedTCP(ctx, protector, dialAddr, timeout)
 		if err != nil {
 			return nil, fmt.Errorf("dial SSL %s: %w", dialAddr, err)
@@ -246,7 +246,7 @@ func dialSSHTransport(ctx context.Context, cfg SSHConfig, protector SocketProtec
 			wsHost = sni
 		}
 
-		logMsg("INFO", "Dialing WebSocket %s (Host=%s, SNI=%s)", wsURL, wsHost, sni)
+		logMsg("DEBUG", "Dialing WebSocket %s (Host=%s, SNI=%s)", wsURL, wsHost, sni)
 		d := newProtectedDialer(protector, timeout)
 		wsDialer := websocket.Dialer{
 			NetDialContext:   d.DialContext,
@@ -383,7 +383,7 @@ func (e *sshEngine) acceptLoop() {
 			if e.dead.Load() || e.ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return
 			}
-			logMsg("WARN", "SOCKS5 accept error: %v", err)
+			logMsg("DEBUG", "SOCKS5 accept error: %v", err)
 			time.Sleep(15 * time.Millisecond)
 			continue
 		}
