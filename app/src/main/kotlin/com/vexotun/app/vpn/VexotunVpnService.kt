@@ -112,6 +112,44 @@ class VexotunVpnService : VpnService() {
                         runCatching { replyTo.send(reply) }
                     }
                 }
+                VpnIpc.MSG_FETCH_SOCKS -> {
+                    val reqId = msg.arg1
+                    val socksPort = msg.arg2
+                    val url = msg.data.getString("url") ?: ""
+                    val replyTo = msg.replyTo ?: return
+                    serviceScope.launch {
+                        val res = runCatching {
+                            Core.fetchSocksURL(socksPort, url, 8000)
+                        }
+                        val b = Bundle().apply {
+                            putBoolean("ok", res.isSuccess)
+                            putString("body", res.getOrDefault(""))
+                            putString("error", res.exceptionOrNull()?.message ?: "")
+                        }
+                        val reply = Message.obtain(null, VpnIpc.MSG_FETCH_RESULT, reqId, 0).apply {
+                            data = b
+                        }
+                        runCatching { replyTo.send(reply) }
+                    }
+                }
+                VpnIpc.MSG_SPEED_SOCKS -> {
+                    val reqId = msg.arg1
+                    val socksPort = msg.arg2
+                    val url = msg.data.getString("url") ?: ""
+                    val replyTo = msg.replyTo ?: return
+                    serviceScope.launch {
+                        val res = runCatching {
+                            Core.speedTestSocks(socksPort, url, 12000)
+                        }.getOrElse {
+                            "{\"ok\":false,\"error\":\"${it.message ?: "gagal speed test"}\"}"
+                        }
+                        val b = Bundle().apply { putString("result", res) }
+                        val reply = Message.obtain(null, VpnIpc.MSG_SPEED_RESULT, reqId, 0).apply {
+                            data = b
+                        }
+                        runCatching { replyTo.send(reply) }
+                    }
+                }
             }
         }
     }
@@ -212,7 +250,8 @@ class VexotunVpnService : VpnService() {
                 val canUseMux = profile.mode == TunnelMode.XRAY &&
                     profile.xray.muxEnabled &&
                     profile.xray.flow.isBlank() &&
-                    profile.xray.network != XrayTransport.GRPC
+                    profile.xray.network != XrayTransport.GRPC &&
+                    profile.xray.network != XrayTransport.XHTTP
 
                 val xrayJson = if (profile.mode == TunnelMode.XRAY) {
                     XrayConfigBuilder.buildJson(

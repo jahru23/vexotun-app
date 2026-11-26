@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"runtime"
@@ -297,14 +298,12 @@ func PingHTTP(targetURL string, timeoutMs int32) int32 {
 	return int32(time.Since(start).Milliseconds())
 }
 
-// PingSocksHTTP probes an HTTP URL through the local SOCKS5 proxy (127.0.0.1:<socksPort>)
-// to verify tunnel connectivity (e.g. for Xray Mux auto-fallback). Returns latency in ms or -1.
-func PingSocksHTTP(socksPort int32, targetURL string, timeoutMs int32) int32 {
+func newSocksHTTPClient(socksPort int32, timeoutMs int32) (*http.Client, func()) {
 	if socksPort <= 0 {
 		socksPort = 10808
 	}
 	if timeoutMs <= 0 {
-		timeoutMs = 3500
+		timeoutMs = 8000
 	}
 	socksAddr := fmt.Sprintf("127.0.0.1:%d", socksPort)
 	transport := &http.Transport{
@@ -313,12 +312,74 @@ func PingSocksHTTP(socksPort int32, targetURL string, timeoutMs int32) int32 {
 		},
 		DisableKeepAlives: true,
 	}
-	defer transport.CloseIdleConnections()
-
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   time.Duration(timeoutMs) * time.Millisecond,
 	}
+	return client, transport.CloseIdleConnections
+}
+
+// FetchSocksURL fetches a small HTTP/HTTPS response body through the local SOCKS5 proxy.
+func FetchSocksURL(socksPort int32, targetURL string, timeoutMs int32) (string, error) {
+	client, cleanup := newSocksHTTPClient(socksPort, timeoutMs)
+	defer cleanup()
+
+	resp, err := client.Get(targetURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+// SpeedTestSocks downloads up to 8 MiB through the local SOCKS5 proxy and returns JSON
+// {"ok":true,"bytes":N,"ms":T,"mbps":M} or {"ok":false,"error":"..."}.
+func SpeedTestSocks(socksPort int32, targetURL string, timeoutMs int32) string {
+	if timeoutMs <= 0 {
+		timeoutMs = 12000
+	}
+	client, cleanup := newSocksHTTPClient(socksPort, timeoutMs)
+	defer cleanup()
+
+	start := time.Now()
+	resp, err := client.Get(targetURL)
+	if err != nil {
+		b, _ := json.Marshal(map[string]any{"ok": false, "error": err.Error()})
+		return string(b)
+	}
+	defer resp.Body.Close()
+	n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 8*1024*1024))
+	elapsedMs := time.Since(start).Milliseconds()
+	if err != nil && n == 0 {
+		b, _ := json.Marshal(map[string]any{"ok": false, "error": err.Error()})
+		return string(b)
+	}
+	if elapsedMs <= 0 {
+		elapsedMs = 1
+	}
+	mbps := (float64(n) * 8.0) / (float64(elapsedMs) * 1000.0)
+	b, _ := json.Marshal(map[string]any{
+		"ok":    true,
+		"bytes": n,
+		"ms":    elapsedMs,
+		"mbps":  mbps,
+	})
+	return string(b)
+}
+
+// PingSocksHTTP probes an HTTP URL through the local SOCKS5 proxy (127.0.0.1:<socksPort>)
+// to verify tunnel connectivity (e.g. for Xray Mux auto-fallback). Returns latency in ms or -1.
+func PingSocksHTTP(socksPort int32, targetURL string, timeoutMs int32) int32 {
+	if timeoutMs <= 0 {
+		timeoutMs = 3500
+	}
+	client, cleanup := newSocksHTTPClient(socksPort, timeoutMs)
+	defer cleanup()
+
 	start := time.Now()
 	resp, err := client.Head(targetURL)
 	if err != nil {

@@ -68,3 +68,36 @@ func TestSelectiveXrayImportsStartStop(t *testing.T) {
 
 	TrimMemory()
 }
+
+func TestSelectiveXrayXHTTPStartStop(t *testing.T) {
+	socksPort := getFreePort(t)
+	xrayJSON := `{
+		"log": {"loglevel": "error"},
+		"outbounds": [
+			{
+				"tag": "proxy",
+				"protocol": "vless",
+				"settings": {
+					"vnext": [{
+						"address": "127.0.0.1",
+						"port": 443,
+						"users": [{"id": "11111111-1111-1111-1111-111111111111", "encryption": "none"}]
+					}]
+				},
+				"streamSettings": {
+					"network": "xhttp",
+					"security": "tls",
+					"tlsSettings": {"serverName": "example.com", "fingerprint": "chrome", "alpn": ["h2", "http/1.1"]},
+					"xhttpSettings": {"path": "/xhvless", "host": "example.com"}
+				}
+			},
+			{"tag": "direct", "protocol": "freedom"}
+		]
+	}`
+
+	eng, err := startXrayEngine(xrayJSON, "127.0.0.1", socksPort, nil)
+	if err != nil {
+		t.Fatalf("startXrayEngine XHTTP failed: %v", err)
+	}
+	eng.Stop()
+}

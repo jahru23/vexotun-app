@@ -52,6 +52,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
@@ -178,6 +179,7 @@ import java.util.Locale
 private enum class AppPage(val title: String, val icon: ImageVector) {
     TUNNEL("Tunnel", Icons.Default.PowerSettingsNew),
     CONFIG("Config", Icons.Default.Key),
+    TOOLS("Tools Jaringan", Icons.Default.Build),
     APPS("Filter Aplikasi", Icons.Default.Apps),
     SETTINGS("Pengaturan", Icons.Default.Tune)
 }
@@ -381,7 +383,7 @@ fun MainScreen(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Spacer(Modifier.height(8.dp))
 
-                listOf(AppPage.APPS, AppPage.SETTINGS).forEach { page ->
+                listOf(AppPage.TOOLS, AppPage.APPS, AppPage.SETTINGS).forEach { page ->
                     NavigationDrawerItem(
                         icon = { Icon(page.icon, contentDescription = null) },
                         label = { Text(page.title) },
@@ -513,6 +515,10 @@ fun MainScreen(
                             )
                         }
                     }
+                    AppPage.TOOLS -> ToolsPage(
+                        socksPort = config.socksPort,
+                        isVpnConnected = runtime.status == ConnectionStatus.CONNECTED
+                    )
                     AppPage.APPS -> {
                         LaunchedEffect(Unit) { viewModel.ensureAppsLoaded() }
                         SplitTunnelPage(
@@ -2066,28 +2072,7 @@ private fun XrayProfileEditor(
                 )
             }
 
-            if (x.tls) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Allow Insecure",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Switch(
-                        checked = x.allowInsecure,
-                        onCheckedChange = { checked ->
-                            onUpdateProfile { it.copy(xray = it.xray.copy(allowInsecure = checked)) }
-                        }
-                    )
-                }
-            }
-
-            if (x.flow.isBlank() && x.network != XrayTransport.GRPC) {
+            if (x.flow.isBlank() && x.network != XrayTransport.GRPC && x.network != XrayTransport.XHTTP) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Row(
                     modifier = Modifier.fillMaxWidth(),

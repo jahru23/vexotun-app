@@ -124,12 +124,11 @@ object XrayConfigBuilder {
             if (p.tls) {
                 put("tlsSettings", buildJsonObject {
                     put("serverName", effectiveSni)
-                    put("allowInsecure", p.allowInsecure)
                     put("fingerprint", "chrome")
                     val alpnList = when (p.network) {
                         XrayTransport.GRPC -> listOf("h2")
                         XrayTransport.WS, XrayTransport.HTTPUPGRADE -> listOf("http/1.1")
-                        XrayTransport.TCP -> listOf("h2", "http/1.1")
+                        XrayTransport.XHTTP, XrayTransport.TCP -> listOf("h2", "http/1.1")
                     }
                     put("alpn", buildJsonArray {
                         alpnList.forEach { add(JsonPrimitive(it)) }
@@ -158,6 +157,13 @@ object XrayConfigBuilder {
                     }
                 })
 
+                XrayTransport.XHTTP -> put("xhttpSettings", buildJsonObject {
+                    put("path", p.path.trim().ifBlank { "/" })
+                    if (effectiveHost.isNotBlank()) {
+                        put("host", effectiveHost)
+                    }
+                })
+
                 XrayTransport.TCP -> {
                     // Default raw TCP
                 }
@@ -169,7 +175,11 @@ object XrayConfigBuilder {
             })
         }
 
-        val useMux = muxEnabled && p.muxEnabled && p.flow.isBlank() && p.network != XrayTransport.GRPC
+        val useMux = muxEnabled &&
+            p.muxEnabled &&
+            p.flow.isBlank() &&
+            p.network != XrayTransport.GRPC &&
+            p.network != XrayTransport.XHTTP
         return buildJsonObject {
             put("tag", "proxy")
             put("protocol", p.protocol.wireValue)

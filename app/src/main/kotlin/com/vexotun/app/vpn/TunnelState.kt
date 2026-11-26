@@ -41,6 +41,8 @@ object VpnIpc {
     const val MSG_CLEAR_LOGS = 4
     const val MSG_PING_SOCKS = 5
     const val MSG_SCAN_SLOWDNS = 6
+    const val MSG_FETCH_SOCKS = 8
+    const val MSG_SPEED_SOCKS = 9
 
     // :vpn -> UI
     const val MSG_SYNC_SNAPSHOT = 10
@@ -50,6 +52,8 @@ object VpnIpc {
     const val MSG_LOGS_CLEARED = 14
     const val MSG_PING_RESULT = 15
     const val MSG_SCAN_RESULT = 16
+    const val MSG_FETCH_RESULT = 17
+    const val MSG_SPEED_RESULT = 18
 }
 
 enum class ConnectionStatus {
@@ -135,6 +139,8 @@ object TunnelState {
 
     private val pendingPings = ConcurrentHashMap<Int, CompletableDeferred<Int>>()
     private val pendingScans = ConcurrentHashMap<Int, CompletableDeferred<String>>()
+    private val pendingFetches = ConcurrentHashMap<Int, CompletableDeferred<Result<String>>>()
+    private val pendingSpeeds = ConcurrentHashMap<Int, CompletableDeferred<String>>()
 
     private val uiIncomingHandler = object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
@@ -180,6 +186,18 @@ object TunnelState {
                     val res = msg.data.getString("result")
                         ?: "{\"ok\":false,\"error\":\"Respon scan kosong\"}"
                     pendingScans.remove(msg.arg1)?.complete(res)
+                }
+                VpnIpc.MSG_FETCH_RESULT -> {
+                    val ok = msg.data.getBoolean("ok", false)
+                    val body = msg.data.getString("body") ?: ""
+                    val err = msg.data.getString("error") ?: "Gagal mengambil data"
+                    val res = if (ok) Result.success(body) else Result.failure(IllegalStateException(err))
+                    pendingFetches.remove(msg.arg1)?.complete(res)
+                }
+                VpnIpc.MSG_SPEED_RESULT -> {
+                    val res = msg.data.getString("result")
+                        ?: "{\"ok\":false,\"error\":\"Respon speed test kosong\"}"
+                    pendingSpeeds.remove(msg.arg1)?.complete(res)
                 }
             }
         }
@@ -247,6 +265,12 @@ object TunnelState {
         pendingScans.keys.toList().forEach { key ->
             pendingScans.remove(key)?.complete("{\"ok\":false,\"error\":\"Koneksi ke layanan VPN terputus\"}")
         }
+        pendingFetches.keys.toList().forEach { key ->
+            pendingFetches.remove(key)?.complete(Result.failure(IllegalStateException("Koneksi ke layanan VPN terputus")))
+        }
+        pendingSpeeds.keys.toList().forEach { key ->
+            pendingSpeeds.remove(key)?.complete("{\"ok\":false,\"error\":\"Koneksi ke layanan VPN terputus\"}")
+        }
     }
 
     private fun sendToService(
@@ -296,6 +320,36 @@ object TunnelState {
         return withTimeoutOrNull(timeoutMs) { deferred.await() } ?: run {
             pendingScans.remove(reqId)
             "{\"ok\":false,\"error\":\"Timeout memindai DNS\"}"
+        }
+    }
+
+    suspend fun fetchSocksUrl(socksPort: Int, targetUrl: String, timeoutMs: Long = 10000L): Result<String> {
+        val reqId = nextReqId.getAndIncrement()
+        val deferred = CompletableDeferred<Result<String>>()
+        pendingFetches[reqId] = deferred
+        val bundle = Bundle().apply { putString("url", targetUrl) }
+        if (!sendToService(VpnIpc.MSG_FETCH_SOCKS, arg1 = reqId, arg2 = socksPort, data = bundle, replyTo = uiReplyMessenger)) {
+            pendingFetches.remove(reqId)
+            return Result.failure(IllegalStateException("Layanan VPN belum terhubung"))
+        }
+        return withTimeoutOrNull(timeoutMs) { deferred.await() } ?: run {
+            pendingFetches.remove(reqId)
+            Result.failure(IllegalStateException("Request timeout"))
+        }
+    }
+
+    suspend fun speedTestSocks(socksPort: Int, targetUrl: String, timeoutMs: Long = 15000L): String {
+        val reqId = nextReqId.getAndIncrement()
+        val deferred = CompletableDeferred<String>()
+        pendingSpeeds[reqId] = deferred
+        val bundle = Bundle().apply { putString("url", targetUrl) }
+        if (!sendToService(VpnIpc.MSG_SPEED_SOCKS, arg1 = reqId, arg2 = socksPort, data = bundle, replyTo = uiReplyMessenger)) {
+            pendingSpeeds.remove(reqId)
+            return "{\"ok\":false,\"error\":\"Layanan VPN belum terhubung\"}"
+        }
+        return withTimeoutOrNull(timeoutMs) { deferred.await() } ?: run {
+            pendingSpeeds.remove(reqId)
+            "{\"ok\":false,\"error\":\"Tes kecepatan timeout\"}"
         }
     }
 

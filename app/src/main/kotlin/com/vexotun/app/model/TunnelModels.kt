@@ -48,6 +48,7 @@ enum class XrayTransport(val wireValue: String, val label: String) {
     WS("ws", "WebSocket"),
     GRPC("grpc", "gRPC"),
     HTTPUPGRADE("httpupgrade", "HTTPUpgrade"),
+    XHTTP("xhttp", "XHTTP"),
     TCP("tcp", "TCP")
 }
 

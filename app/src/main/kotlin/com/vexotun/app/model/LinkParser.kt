@@ -169,6 +169,7 @@ object LinkParser {
         "ws", "websocket" -> XrayTransport.WS
         "grpc" -> XrayTransport.GRPC
         "httpupgrade" -> XrayTransport.HTTPUPGRADE
+        "xhttp", "splithttp" -> XrayTransport.XHTTP
         else -> XrayTransport.TCP
     }
 
