@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -49,9 +51,133 @@ func (c *slowDNSConn) Close() error {
 	return err
 }
 
+const (
+	slowDNSPenaltyTTL = 3 * time.Minute
+	slowDNSRouteTTL   = 10 * time.Minute
+)
+
+type cachedSlowDNSRoute struct {
+	cand     solver.Candidate
+	striped  []string
+	cachedAt time.Time
+}
+
+var slowDNSCache = struct {
+	mu             sync.Mutex
+	pairPenalties  map[string]time.Time
+	qtypePenalties map[string]time.Time
+	routes         map[string]cachedSlowDNSRoute
+}{
+	pairPenalties:  make(map[string]time.Time),
+	qtypePenalties: make(map[string]time.Time),
+	routes:         make(map[string]cachedSlowDNSRoute),
+}
+
+func slowDNSRouteKey(ns, typeLabel string, resolvers []string) string {
+	return strings.ToLower(ns) + "|" + strings.ToUpper(typeLabel) + "|" + strings.Join(resolvers, ",")
+}
+
+func recordSlowDNSPenalty(ns, resolver string, qtype uint16, demoteQType bool) {
+	now := time.Now()
+	exp := now.Add(slowDNSPenaltyTTL)
+	nsKey := strings.ToLower(ns)
+	slowDNSCache.mu.Lock()
+	defer slowDNSCache.mu.Unlock()
+	slowDNSCache.pairPenalties[fmt.Sprintf("%s|%s|%d", nsKey, resolver, qtype)] = exp
+	// In AUTO mode, demote non-AAAA QTYPEs after a live stall so reconnect tries AAAA/alternatives.
+	if demoteQType && qtype != dnswire.RRTypeAAAA {
+		slowDNSCache.qtypePenalties[fmt.Sprintf("%s|%d", nsKey, qtype)] = exp
+	}
+	for k, r := range slowDNSCache.routes {
+		if strings.HasPrefix(k, nsKey+"|") && (r.cand.Resolver == resolver || r.cand.QType == qtype) {
+			delete(slowDNSCache.routes, k)
+		}
+	}
+}
+
+func isSlowDNSPenalizedLocked(ns, resolver string, qtype uint16, now time.Time) bool {
+	nsKey := strings.ToLower(ns)
+	pk := fmt.Sprintf("%s|%s|%d", nsKey, resolver, qtype)
+	if exp, ok := slowDNSCache.pairPenalties[pk]; ok {
+		if now.Before(exp) {
+			return true
+		}
+		delete(slowDNSCache.pairPenalties, pk)
+	}
+	qk := fmt.Sprintf("%s|%d", nsKey, qtype)
+	if exp, ok := slowDNSCache.qtypePenalties[qk]; ok {
+		if now.Before(exp) {
+			return true
+		}
+		delete(slowDNSCache.qtypePenalties, qk)
+	}
+	return false
+}
+
+func getCachedSlowDNSRoute(key, ns string) (cachedSlowDNSRoute, bool) {
+	now := time.Now()
+	slowDNSCache.mu.Lock()
+	defer slowDNSCache.mu.Unlock()
+	r, ok := slowDNSCache.routes[key]
+	if !ok {
+		return cachedSlowDNSRoute{}, false
+	}
+	if now.Sub(r.cachedAt) > slowDNSRouteTTL || isSlowDNSPenalizedLocked(ns, r.cand.Resolver, r.cand.QType, now) {
+		delete(slowDNSCache.routes, key)
+		return cachedSlowDNSRoute{}, false
+	}
+	return r, true
+}
+
+func setCachedSlowDNSRoute(key string, cand solver.Candidate, striped []string) {
+	cp := append([]string(nil), striped...)
+	slowDNSCache.mu.Lock()
+	slowDNSCache.routes[key] = cachedSlowDNSRoute{
+		cand:     cand,
+		striped:  cp,
+		cachedAt: time.Now(),
+	}
+	slowDNSCache.mu.Unlock()
+}
+
+func sortCandidatesWithPenalties(ns string, cands []solver.Candidate) []solver.Candidate {
+	out := append([]solver.Candidate(nil), cands...)
+	now := time.Now()
+	slowDNSCache.mu.Lock()
+	penalized := make([]bool, len(out))
+	for i, c := range out {
+		penalized[i] = isSlowDNSPenalizedLocked(ns, c.Resolver, c.QType, now)
+	}
+	slowDNSCache.mu.Unlock()
+
+	sort.SliceStable(out, func(i, j int) bool {
+		pi := false
+		pj := false
+		for idx, c := range cands {
+			if c.Resolver == out[i].Resolver && c.QType == out[i].QType {
+				pi = penalized[idx]
+			}
+			if c.Resolver == out[j].Resolver && c.QType == out[j].QType {
+				pj = penalized[idx]
+			}
+		}
+		if pi != pj {
+			return !pi
+		}
+		return false
+	})
+	return out
+}
+
 type vexSlowDNSConn struct {
 	*smux.Stream
-	cli *vxtunnel.Client
+	cli       *vxtunnel.Client
+	ns        string
+	resolver  string
+	qtype     uint16
+	autoMode  bool
+	penalized bool
+	mu        sync.Mutex
 }
 
 func (c *vexSlowDNSConn) Close() error {
@@ -69,7 +195,19 @@ func (c *vexSlowDNSConn) IsHealthy(maxSilence time.Duration) bool {
 	if c.cli == nil {
 		return false
 	}
-	return c.cli.IsHealthy(maxSilence)
+	ok := c.cli.IsHealthy(maxSilence)
+	if !ok {
+		c.mu.Lock()
+		already := c.penalized
+		c.penalized = true
+		c.mu.Unlock()
+		if !already && c.ns != "" {
+			recordSlowDNSPenalty(c.ns, c.resolver, c.qtype, c.autoMode)
+			logMsg("WARN", "SlowDNS menandai jalur macet (%s / %s), reconnect akan beralih tipe/resolver",
+				c.resolver, strings.ToUpper(dnswire.RecordTypeString(c.qtype)))
+		}
+	}
+	return ok
 }
 
 func makeProtectedPacketFactory(protector SocketProtector) vxtunnel.PacketFactory {
@@ -157,7 +295,43 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 	if typeLabel == "" {
 		typeLabel = "AUTO"
 	}
+	autoMode := typeLabel == "AUTO" || typeLabel == "ANY"
 	pktFactory := makeProtectedPacketFactory(protector)
+	routeKey := slowDNSRouteKey(ns, typeLabel, resolvers)
+
+	if cached, ok := getCachedSlowDNSRoute(routeKey, ns); ok {
+		logMsg("INFO", "SlowDNS VexDNS fast-dial cached %s via %v (Type=%s, MTU=%d)",
+			ns, cached.striped, strings.ToUpper(cached.cand.QTypeName), cached.cand.DownBudget)
+		dialCtx, dialCancel := context.WithTimeout(ctx, 8*time.Second)
+		cli, derr := vxtunnel.DialClient(dialCtx, vxtunnel.ClientConfig{
+			DNSServerAddr:  cached.cand.Resolver,
+			DNSServerAddrs: cached.striped,
+			Domain:         vxDomain,
+			Pubkey:         vxPubkey,
+			QType:          cached.cand.QType,
+			DownBudget:     uint16(cached.cand.DownBudget),
+			MaxQueryUDP:    cached.cand.MaxQueryUDP,
+			ListenPacket:   pktFactory,
+		})
+		dialCancel()
+		if derr == nil {
+			if stream, serr := cli.OpenStream(); serr == nil {
+				logMsg("INFO", "SlowDNS VexDNS terhubung cepat via %v (%s • MTU %d)",
+					cached.striped, strings.ToUpper(cached.cand.QTypeName), cached.cand.DownBudget)
+				return &vexSlowDNSConn{
+					Stream:   stream,
+					cli:      cli,
+					ns:       ns,
+					resolver: cached.cand.Resolver,
+					qtype:    cached.cand.QType,
+					autoMode: autoMode,
+				}, nil
+			}
+			_ = cli.Close()
+		}
+		recordSlowDNSPenalty(ns, cached.cand.Resolver, cached.cand.QType, false)
+	}
+
 	logMsg("INFO", "SlowDNS VexDNS: memindai %d resolver %v (Type=%s) -> %s",
 		len(resolvers), resolvers, typeLabel, ns)
 
@@ -173,17 +347,18 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 	probeCancel()
 
 	if probeErr == nil && len(cands) > 0 {
-		maxTries := len(cands)
-		if maxTries > 4 {
-			maxTries = 4
+		ordered := sortCandidatesWithPenalties(ns, cands)
+		maxTries := len(ordered)
+		if maxTries > 6 {
+			maxTries = 6
 		}
 		var lastDialErr error
 		for i := 0; i < maxTries; i++ {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			cand := cands[i]
-			striped := solver.StripedResolvers(cands, cand)
+			cand := ordered[i]
+			striped := solver.StripedResolvers(ordered, cand)
 			logMsg("INFO", "SlowDNS VexDNS dialing %s via %v (Type=%s, MTU=%d, RTT=%dms)",
 				ns, striped, strings.ToUpper(cand.QTypeName), cand.DownBudget, cand.RTT.Milliseconds())
 
@@ -201,6 +376,7 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 			dialCancel()
 			if derr != nil {
 				lastDialErr = derr
+				recordSlowDNSPenalty(ns, cand.Resolver, cand.QType, false)
 				logMsg("WARN", "SlowDNS VexDNS jalur %s (%s) gagal: %v", cand.Resolver, strings.ToUpper(cand.QTypeName), derr)
 				continue
 			}
@@ -209,13 +385,22 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 			if serr != nil {
 				_ = cli.Close()
 				lastDialErr = serr
+				recordSlowDNSPenalty(ns, cand.Resolver, cand.QType, false)
 				logMsg("WARN", "SlowDNS VexDNS open stream (%s) gagal: %v", strings.ToUpper(cand.QTypeName), serr)
 				continue
 			}
 
+			setCachedSlowDNSRoute(routeKey, cand, striped)
 			logMsg("INFO", "SlowDNS VexDNS terhubung via %v (%s • MTU %d • %dms)",
 				striped, strings.ToUpper(cand.QTypeName), cand.DownBudget, cand.RTT.Milliseconds())
-			return &vexSlowDNSConn{Stream: stream, cli: cli}, nil
+			return &vexSlowDNSConn{
+				Stream:   stream,
+				cli:      cli,
+				ns:       ns,
+				resolver: cand.Resolver,
+				qtype:    cand.QType,
+				autoMode: autoMode,
+			}, nil
 		}
 		logMsg("WARN", "SlowDNS VexDNS kandidat gagal (%v), mencoba fallback dnstt standar...", lastDialErr)
 	} else if probeErr != nil {

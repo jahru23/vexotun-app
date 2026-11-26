@@ -128,3 +128,23 @@ func TestQueryNameRoundtripAndMaxPayload(t *testing.T) {
 		t.Fatalf("decoded len=%d want %d", len(decoded), len(raw))
 	}
 }
+
+func TestMultiRRReorderedDecode(t *testing.T) {
+	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	chunks := EncodeRDataMultiRR(payload, 16)
+	if len(chunks) < 3 {
+		t.Fatalf("expected >= 3 chunks for AAAA")
+	}
+	// Reverse order to simulate aggressive recursive DNS RR reordering.
+	shuffled := make([][]byte, len(chunks))
+	for i := range chunks {
+		shuffled[i] = chunks[len(chunks)-1-i]
+	}
+	got, err := DecodeRDataMultiRR(shuffled)
+	if err != nil {
+		t.Fatalf("DecodeRDataMultiRR(AAAA) shuffled: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("shuffled AAAA mismatch: got %q want %q", got, payload)
+	}
+}

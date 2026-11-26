@@ -343,14 +343,28 @@ func DecodeRDataSRV(data []byte, domain Name) ([]byte, error) {
 }
 
 // EncodeRDataMultiRR prefixes p with uint16 BE length and splits into chunkSize RRs.
+// For AAAA (chunkSize >= 8), each RR reserves byte 0 as a sequence index (0..255)
+// so recursive resolvers that reorder AAAA records never corrupt the payload.
 func EncodeRDataMultiRR(p []byte, chunkSize int) [][]byte {
 	buf := make([]byte, 2+len(p))
 	binary.BigEndian.PutUint16(buf[0:2], uint16(len(p)))
 	copy(buf[2:], p)
-	chunks := make([][]byte, 0, (len(buf)+chunkSize-1)/chunkSize)
-	for len(buf) > 0 {
+	if chunkSize < 8 {
+		chunks := make([][]byte, 0, (len(buf)+chunkSize-1)/chunkSize)
+		for len(buf) > 0 {
+			chunk := make([]byte, chunkSize)
+			n := copy(chunk, buf)
+			buf = buf[n:]
+			chunks = append(chunks, chunk)
+		}
+		return chunks
+	}
+	dataPerChunk := chunkSize - 1
+	chunks := make([][]byte, 0, (len(buf)+dataPerChunk-1)/dataPerChunk)
+	for idx := 0; len(buf) > 0 && idx < 256; idx++ {
 		chunk := make([]byte, chunkSize)
-		n := copy(chunk, buf)
+		chunk[0] = byte(idx)
+		n := copy(chunk[1:], buf)
 		buf = buf[n:]
 		chunks = append(chunks, chunk)
 	}
@@ -358,10 +372,33 @@ func EncodeRDataMultiRR(p []byte, chunkSize int) [][]byte {
 }
 
 // DecodeRDataMultiRR reassembles fixed-size RRs (A=4B, AAAA=16B) and strips trailing zero-padding.
+// For AAAA (16B chunks), chunks are reordered by their byte-0 sequence index.
 func DecodeRDataMultiRR(chunks [][]byte) ([]byte, error) {
+	if len(chunks) == 0 || len(chunks) > 256 {
+		return nil, io.ErrUnexpectedEOF
+	}
 	var total bytes.Buffer
-	for _, c := range chunks {
-		total.Write(c)
+	if len(chunks[0]) < 8 {
+		for _, c := range chunks {
+			total.Write(c)
+		}
+	} else {
+		ordered := make([][]byte, len(chunks))
+		seen := make([]bool, len(chunks))
+		for _, c := range chunks {
+			if len(c) < 8 {
+				return nil, io.ErrUnexpectedEOF
+			}
+			idx := int(c[0])
+			if idx >= len(chunks) || seen[idx] {
+				return nil, io.ErrUnexpectedEOF
+			}
+			seen[idx] = true
+			ordered[idx] = c[1:]
+		}
+		for _, part := range ordered {
+			total.Write(part)
+		}
 	}
 	b := total.Bytes()
 	if len(b) < 2 {

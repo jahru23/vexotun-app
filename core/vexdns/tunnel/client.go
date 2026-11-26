@@ -66,8 +66,10 @@ type Client struct {
 	noiseRW    io.ReadWriteCloser
 	smuxSess   *smux.Session
 
-	maxUpPayload int
-	txNotify     chan struct{}
+	maxUpPayload  int
+	minDownBudget uint16
+	activeBudget  atomic.Uint32
+	txNotify      chan struct{}
 
 	inflightMu sync.Mutex
 	inflight   map[uint16]inflightEntry
@@ -173,9 +175,20 @@ func DialClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	}
 
 	downLimit := protocol.MaxResponsePayload(cfg.Domain, cfg.QType, nil, int(cfg.DownBudget))
-	if protocol.SafeKCPMTU(downLimit) == 0 {
+	serverMTU := protocol.SafeKCPMTU(downLimit)
+	if serverMTU == 0 {
 		closeTargets()
 		return nil, fmt.Errorf("tunnel: down budget %d insufficient for %s", cfg.DownBudget, dnswire.RecordTypeString(cfg.QType))
+	}
+	if serverMTU >= 880 {
+		serverMTU = 525
+	}
+	minDownBudget := cfg.DownBudget
+	for b := 420; b < int(cfg.DownBudget); b += 40 {
+		if protocol.MaxResponsePayload(cfg.Domain, cfg.QType, nil, b) >= serverMTU+2 {
+			minDownBudget = uint16(b)
+			break
+		}
 	}
 	// Upstream QNAME segments must fit inside upChunkCap while downstream segments independently use Server's downMTU.
 	sessionMTU := upChunkCap
@@ -224,11 +237,13 @@ func DialClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		targets:      targets,
 		ttConn:       ttConn,
 		kcpConn:      kcpConn,
-		maxUpPayload: maxRawQ - protocol.NativeHeaderLen,
-		txNotify:     txNotify,
-		inflight:     make(map[uint16]inflightEntry, 96),
-		closeCh:      make(chan struct{}),
+		maxUpPayload:  maxRawQ - protocol.NativeHeaderLen,
+		minDownBudget: minDownBudget,
+		txNotify:      txNotify,
+		inflight:      make(map[uint16]inflightEntry, 96),
+		closeCh:       make(chan struct{}),
 	}
+	c.activeBudget.Store(uint32(cfg.DownBudget))
 	nowNs := time.Now().UnixNano()
 	c.LastValidReplyNs.Store(nowNs)
 
@@ -485,7 +500,8 @@ func (c *Client) dnsPollLoop() {
 	defer ticker.Stop()
 
 	sendOne := func(pkts [][]byte) {
-		payload, err := protocol.EncodeVexoraQuery(c.clientID, c.cfg.DownBudget, pkts)
+		curBudget := uint16(c.activeBudget.Load())
+		payload, err := protocol.EncodeVexoraQuery(c.clientID, curBudget, pkts)
 		if err != nil {
 			return
 		}
@@ -504,7 +520,7 @@ func (c *Client) dnsPollLoop() {
 			Additional: []dnswire.RR{{
 				Name:  dnswire.Name{},
 				Type:  dnswire.RRTypeOPT,
-				Class: c.cfg.DownBudget,
+				Class: curBudget,
 			}},
 		}
 		wire, err := q.WireFormat()
@@ -531,6 +547,8 @@ func (c *Client) dnsPollLoop() {
 	sendOne(nil)
 
 	lastReplies := uint64(0)
+	cleanBurstTicks := 0
+	lossTicks := 0
 	for {
 		active, expired := c.activeInFlight()
 		if expired > 0 {
@@ -538,10 +556,34 @@ func (c *Client) dnsPollLoop() {
 			if curWindow < 12 {
 				curWindow = 12
 			}
-		} else if isBurstActive() && curWindow < c.cfg.MaxInFlight {
-			curWindow += 2
-			if curWindow > c.cfg.MaxInFlight {
-				curWindow = c.cfg.MaxInFlight
+			cleanBurstTicks = 0
+			lossTicks++
+			curB := uint16(c.activeBudget.Load())
+			if curB > c.minDownBudget && (expired >= 4 || lossTicks >= 3) {
+				nextB := curB - 240
+				if curB <= 240 || nextB < c.minDownBudget {
+					nextB = c.minDownBudget
+				}
+				c.activeBudget.Store(uint32(nextB))
+				lossTicks = 0
+			}
+		} else if isBurstActive() {
+			lossTicks = 0
+			if curWindow < c.cfg.MaxInFlight {
+				curWindow += 2
+				if curWindow > c.cfg.MaxInFlight {
+					curWindow = c.cfg.MaxInFlight
+				}
+			}
+			cleanBurstTicks++
+			curB := uint16(c.activeBudget.Load())
+			if curB < c.cfg.DownBudget && cleanBurstTicks >= 40 {
+				nextB := curB + 120
+				if nextB > c.cfg.DownBudget {
+					nextB = c.cfg.DownBudget
+				}
+				c.activeBudget.Store(uint32(nextB))
+				cleanBurstTicks = 0
 			}
 		}
 
