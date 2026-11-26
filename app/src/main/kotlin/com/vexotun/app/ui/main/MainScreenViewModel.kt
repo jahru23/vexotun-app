@@ -8,6 +8,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import androidx.core.content.pm.PackageInfoCompat
@@ -15,6 +16,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import java.net.HttpURLConnection
 import java.net.Inet4Address
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URL
 import java.util.Locale
 import java.util.UUID
@@ -29,7 +32,6 @@ import com.vexotun.app.model.VxtLockInfo
 import com.vexotun.app.vpn.ConnectionStatus
 import com.vexotun.app.vpn.TunnelState
 import com.vexotun.app.vpn.VexotunVpnService
-import core.Core
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -280,12 +282,12 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                                 val ms = when (profile.mode) {
                                     TunnelMode.SSH -> {
                                         if (profile.ssh.host.isNotBlank()) {
-                                            Core.pingTCP(profile.ssh.host.trim(), profile.ssh.port, 2500)
+                                            pingTcpMs(profile.ssh.host.trim(), profile.ssh.port, 2500)
                                         } else -1
                                     }
                                     TunnelMode.XRAY -> {
                                         if (profile.xray.address.isNotBlank()) {
-                                            Core.pingTCP(profile.xray.address.trim(), profile.xray.port, 2500)
+                                            pingTcpMs(profile.xray.address.trim(), profile.xray.port, 2500)
                                         } else -1
                                     }
                                 }
@@ -347,24 +349,24 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 val active = _config.value.activeProfile()
                 val connected = TunnelState.state.value.status == ConnectionStatus.CONNECTED
                 if (connected) {
-                    Core.pingSocksHTTP(_config.value.socksPort, "https://www.gstatic.com/generate_204", 5000)
+                    TunnelState.pingSocks(_config.value.socksPort)
                 } else {
                     when (active?.mode) {
                         TunnelMode.SSH -> {
                             if (active.ssh.host.isNotBlank()) {
-                                Core.pingTCP(active.ssh.host.trim(), active.ssh.port, 3000)
+                                pingTcpMs(active.ssh.host.trim(), active.ssh.port, 3000)
                             } else {
-                                Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
+                                pingHttpMs("https://www.gstatic.com/generate_204", 4000)
                             }
                         }
                         TunnelMode.XRAY -> {
                             if (active.xray.address.isNotBlank()) {
-                                Core.pingTCP(active.xray.address.trim(), active.xray.port, 3000)
+                                pingTcpMs(active.xray.address.trim(), active.xray.port, 3000)
                             } else {
-                                Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
+                                pingHttpMs("https://www.gstatic.com/generate_204", 4000)
                             }
                         }
-                        null -> Core.pingHTTP("https://www.gstatic.com/generate_204", 4000)
+                        null -> pingHttpMs("https://www.gstatic.com/generate_204", 4000)
                     }
                 }
             }
@@ -375,6 +377,35 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             )
             _isPinging.value = false
         }
+    }
+
+    private fun pingTcpMs(host: String, port: Int, timeoutMs: Int): Int {
+        if (host.isBlank() || port <= 0) return -1
+        return runCatching {
+            val start = SystemClock.elapsedRealtime()
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(host, port), timeoutMs)
+            }
+            (SystemClock.elapsedRealtime() - start).toInt()
+        }.getOrElse { -1 }
+    }
+
+    private fun pingHttpMs(targetUrl: String, timeoutMs: Int): Int {
+        return runCatching {
+            val start = SystemClock.elapsedRealtime()
+            val conn = (URL(targetUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "HEAD"
+                connectTimeout = timeoutMs
+                readTimeout = timeoutMs
+                instanceFollowRedirects = false
+            }
+            try {
+                conn.responseCode
+                (SystemClock.elapsedRealtime() - start).toInt()
+            } finally {
+                conn.disconnect()
+            }
+        }.getOrElse { -1 }
     }
 
     private fun loadInstalledApps() {

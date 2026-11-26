@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -13,6 +14,12 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.Message
+import android.os.Messenger
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
@@ -20,7 +27,6 @@ import com.vexotun.app.MainActivity
 import com.vexotun.app.R
 import com.vexotun.app.data.ConfigStore
 import com.vexotun.app.model.CoreSshPayload
-import com.vexotun.app.model.CoreStats
 import com.vexotun.app.model.CoreTunnelConfig
 import com.vexotun.app.model.CoreXrayPayload
 import com.vexotun.app.model.SplitTunnelMode
@@ -31,6 +37,7 @@ import com.vexotun.app.model.XrayTransport
 import core.Core
 import core.LogHandler
 import core.SocketProtector
+import hev.htproxy.TProxyService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -41,6 +48,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.File
 
 class VexotunVpnService : VpnService() {
 
@@ -63,8 +71,68 @@ class VexotunVpnService : VpnService() {
     @Volatile
     private var isStopping: Boolean = false
 
+    private val ipcHandler = object : Handler(Looper.getMainLooper()) {
+        override fun handleMessage(msg: Message) {
+            when (msg.what) {
+                VpnIpc.MSG_REGISTER -> TunnelState.registerClient(msg.replyTo)
+                VpnIpc.MSG_UNREGISTER -> TunnelState.unregisterClient(msg.replyTo)
+                VpnIpc.MSG_APPEND_LOG -> {
+                    val lvl = msg.data.getString("level") ?: "INFO"
+                    val text = msg.data.getString("message") ?: ""
+                    if (text.isNotEmpty()) TunnelState.appendLog(lvl, text)
+                }
+                VpnIpc.MSG_CLEAR_LOGS -> TunnelState.clearLogs()
+                VpnIpc.MSG_PING_SOCKS -> {
+                    val reqId = msg.arg1
+                    val socksPort = msg.arg2
+                    val replyTo = msg.replyTo ?: return
+                    serviceScope.launch {
+                        val ms = runCatching {
+                            Core.pingSocksHTTP(socksPort, "https://www.gstatic.com/generate_204", 5000)
+                        }.getOrElse { -1 }
+                        runCatching {
+                            replyTo.send(Message.obtain(null, VpnIpc.MSG_PING_RESULT, reqId, ms))
+                        }
+                    }
+                }
+                VpnIpc.MSG_SCAN_SLOWDNS -> {
+                    val reqId = msg.arg1
+                    val payload = msg.data.getString("payload") ?: ""
+                    val replyTo = msg.replyTo ?: return
+                    serviceScope.launch {
+                        val res = runCatching {
+                            Core.scanSlowDNS(payload, null)
+                        }.getOrElse {
+                            "{\"ok\":false,\"error\":\"${it.message ?: "gagal scan"}\"}"
+                        }
+                        val b = Bundle().apply { putString("result", res) }
+                        val reply = Message.obtain(null, VpnIpc.MSG_SCAN_RESULT, reqId, 0).apply {
+                            data = b
+                        }
+                        runCatching { replyTo.send(reply) }
+                    }
+                }
+            }
+        }
+    }
+
+    private val ipcMessenger by lazy { Messenger(ipcHandler) }
+
+    override fun onCreate() {
+        super.onCreate()
+        TunnelState.init(this, serviceProcess = true)
+    }
+
+    override fun onBind(intent: Intent?): IBinder? {
+        if (intent?.action == VpnIpc.ACTION_BIND_IPC) {
+            TunnelState.init(this, serviceProcess = true)
+            return ipcMessenger.binder
+        }
+        return super.onBind(intent)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        TunnelState.init(this)
+        TunnelState.init(this, serviceProcess = true)
         when (intent?.action) {
             ACTION_STOP -> {
                 isStopping = true
@@ -118,7 +186,6 @@ class VexotunVpnService : VpnService() {
                 stopSelf()
                 return@launch
             }
-            var detachedFd = -1
             try {
                 val protoLabel = if (profile.mode == TunnelMode.XRAY) {
                     profile.xray.protocol.name
@@ -223,9 +290,10 @@ class VexotunVpnService : VpnService() {
                     return@launch
                 }
 
+                val effectiveMtu = config.mtu.coerceIn(1280, 1500)
                 val builder = Builder()
                     .setSession("Vexotun")
-                    .setMtu(config.mtu.coerceIn(1280, 1500))
+                    .setMtu(effectiveMtu)
                     .addAddress("10.0.0.2", 24)
                     .addRoute("0.0.0.0", 0)
                     .addAddress("fd00:1::2", 64)
@@ -236,15 +304,15 @@ class VexotunVpnService : VpnService() {
 
                 val pfd = builder.establish()
                     ?: throw IllegalStateException("Gagal membuat interface VPN")
+                tunInterface = pfd
                 TunnelState.appendLog("DEBUG", "VPN interface established")
 
-                // Detach FD so tun2socks owns and closes it without triggering Android fdsan SIGABRT.
-                detachedFd = pfd.detachFd()
-                tunInterface = null
-                Core.attachTun(detachedFd)
-                detachedFd = -1
+                val tproxyConf = writeHevConfig(effectiveMtu, config.socksPort)
+                if (!TProxyService.TProxyStartService(tproxyConf.absolutePath, pfd.fd)) {
+                    throw IllegalStateException("Gagal memulai bridge TUN (hev-socks5-tunnel)")
+                }
 
-                TunnelState.appendLog("DEBUG", "Engine & VPN routes active")
+                TunnelState.appendLog("DEBUG", "Engine & hev-socks5-tunnel active")
                 TunnelState.appendLog("INFO", "Terhubung • ${profile.name}")
 
                 TunnelState.setStatus(ConnectionStatus.CONNECTED, "Terhubung • ${profile.name}")
@@ -257,9 +325,6 @@ class VexotunVpnService : VpnService() {
                     registerNetworkCallback()
                 }
             } catch (t: Throwable) {
-                if (detachedFd >= 0 && !Core.isRunning()) {
-                    runCatching { ParcelFileDescriptor.adoptFd(detachedFd).close() }
-                }
                 val rawErr = t.message.orEmpty()
                 val friendlyErr = friendlyTunnelError(rawErr)
                 if (rawErr.isNotBlank() && rawErr != friendlyErr) {
@@ -302,25 +367,26 @@ class VexotunVpnService : VpnService() {
         statsJob?.cancel()
         statsJob = serviceScope.launch {
             while (isActive && !isStopping) {
-                val stats = runCatching {
-                    json.decodeFromString<CoreStats>(Core.getStats())
-                }.getOrNull()
-                if (stats != null) {
-                    TunnelState.updateTraffic(stats.bytesUp, stats.bytesDown)
-                    if (!stats.running && !isStopping) {
-                        val cfg = ConfigStore(this@VexotunVpnService).load()
-                        if (cfg.autoReconnect) {
-                            TunnelState.appendLog("WARN", "Tunnel berhenti merespons, menyambung ulang otomatis...")
-                            scheduleReconnect("Menyambung ulang tunnel yang terputus...")
-                        } else {
-                            TunnelState.appendLog("ERROR", "Tunnel terputus.")
-                            TunnelState.setStatus(ConnectionStatus.ERROR, "Tunnel terputus")
-                            cleanupResources()
-                            stopForeground(STOP_FOREGROUND_REMOVE)
-                            stopSelf()
-                        }
-                        return@launch
+                val tStats = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
+                if (tStats != null && tStats.size >= 4) {
+                    TunnelState.updateTraffic(tStats[1], tStats[3])
+                }
+                val engineAlive = runCatching {
+                    Core.isRunning() && TProxyService.TProxyIsRunning()
+                }.getOrElse { false }
+                if (!engineAlive && !isStopping) {
+                    val cfg = ConfigStore(this@VexotunVpnService).load()
+                    if (cfg.autoReconnect) {
+                        TunnelState.appendLog("WARN", "Tunnel berhenti merespons, menyambung ulang otomatis...")
+                        scheduleReconnect("Menyambung ulang tunnel yang terputus...")
+                    } else {
+                        TunnelState.appendLog("ERROR", "Tunnel terputus.")
+                        TunnelState.setStatus(ConnectionStatus.ERROR, "Tunnel terputus")
+                        cleanupResources()
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
                     }
+                    return@launch
                 }
                 delay(1000L)
             }
@@ -393,14 +459,38 @@ class VexotunVpnService : VpnService() {
             delay(1200L)
             if (isStopping) return@launch
             TunnelState.appendLog("INFO", reason)
-            statsJob?.cancel()
-            statsJob = null
-            runCatching { Core.stop() }
-            runCatching { tunInterface?.close() }
-            tunInterface = null
+            cleanupResources(cancelReconnect = false)
+            if (isStopping) return@launch
             val config = ConfigStore(this@VexotunVpnService).load()
             startTunnel(config)
         }
+    }
+
+    private fun writeHevConfig(mtu: Int, socksPort: Int): File {
+        val file = File(cacheDir, "tproxy.conf")
+        file.writeText(
+            """
+            tunnel:
+              mtu: $mtu
+              ipv4: 10.0.0.2
+              ipv6: 'fd00:1::2'
+            socks5:
+              port: $socksPort
+              address: 127.0.0.1
+              udp: 'udp'
+            misc:
+              task-stack-size: 32768
+              tcp-buffer-size: 32768
+              udp-recv-buffer-size: 131072
+              udp-copy-buffer-nums: 4
+              max-session-count: 512
+              connect-timeout: 10000
+              tcp-read-write-timeout: 300000
+              udp-read-write-timeout: 30000
+              log-level: error
+            """.trimIndent()
+        )
+        return file
     }
 
     private fun acquireWakeLock() {
@@ -421,16 +511,34 @@ class VexotunVpnService : VpnService() {
         wakeLock = null
     }
 
-    private fun cleanupResources() {
-        reconnectJob?.cancel()
-        reconnectJob = null
+    private fun cleanupResources(cancelReconnect: Boolean = true) {
+        if (cancelReconnect) {
+            reconnectJob?.cancel()
+            reconnectJob = null
+        }
         unregisterNetworkCallback()
         releaseWakeLock()
         statsJob?.cancel()
         statsJob = null
+        runCatching {
+            if (TProxyService.TProxyIsRunning()) {
+                TProxyService.TProxyStopService()
+            }
+        }
         runCatching { Core.stop() }
         runCatching { tunInterface?.close() }
         tunInterface = null
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+            level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN
+        ) {
+            serviceScope.launch {
+                runCatching { Core.trimMemory() }
+            }
+        }
     }
 
     override fun onRevoke() {

@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,8 +8,45 @@ import (
 	"syscall"
 
 	xraycore "github.com/xtls/xray-core/core"
-	_ "github.com/xtls/xray-core/main/distro/all"
 	"github.com/xtls/xray-core/transport/internet"
+
+	// Mandatory core features (replaces bloated distro/all)
+	_ "github.com/xtls/xray-core/app/dispatcher"
+	_ "github.com/xtls/xray-core/app/dns"
+	_ "github.com/xtls/xray-core/app/dns/fakedns"
+	_ "github.com/xtls/xray-core/app/log"
+	_ "github.com/xtls/xray-core/app/policy"
+	_ "github.com/xtls/xray-core/app/proxyman/inbound"
+	_ "github.com/xtls/xray-core/app/proxyman/outbound"
+	_ "github.com/xtls/xray-core/app/router"
+	_ "github.com/xtls/xray-core/app/stats"
+	_ "github.com/xtls/xray-core/main/json"
+
+	// Client inbound / outbound protocols
+	_ "github.com/xtls/xray-core/proxy/blackhole"
+	_ "github.com/xtls/xray-core/proxy/dns"
+	_ "github.com/xtls/xray-core/proxy/dokodemo"
+	_ "github.com/xtls/xray-core/proxy/freedom"
+	_ "github.com/xtls/xray-core/proxy/http"
+	_ "github.com/xtls/xray-core/proxy/loopback"
+	_ "github.com/xtls/xray-core/proxy/shadowsocks"
+	_ "github.com/xtls/xray-core/proxy/socks"
+	_ "github.com/xtls/xray-core/proxy/trojan"
+	_ "github.com/xtls/xray-core/proxy/vless/outbound"
+	_ "github.com/xtls/xray-core/proxy/vmess/outbound"
+
+	// Transports
+	_ "github.com/xtls/xray-core/transport/internet/grpc"
+	_ "github.com/xtls/xray-core/transport/internet/headers/http"
+	_ "github.com/xtls/xray-core/transport/internet/headers/noop"
+	_ "github.com/xtls/xray-core/transport/internet/httpupgrade"
+	_ "github.com/xtls/xray-core/transport/internet/reality"
+	_ "github.com/xtls/xray-core/transport/internet/splithttp"
+	_ "github.com/xtls/xray-core/transport/internet/tagged/taggedimpl"
+	_ "github.com/xtls/xray-core/transport/internet/tcp"
+	_ "github.com/xtls/xray-core/transport/internet/tls"
+	_ "github.com/xtls/xray-core/transport/internet/udp"
+	_ "github.com/xtls/xray-core/transport/internet/websocket"
 )
 
 var (
@@ -134,6 +170,5 @@ func ensureSocksInbound(rawJSON string, listenHost string, socksPort int) (strin
 	if err != nil {
 		return "", err
 	}
-	_ = context.Background()
 	return string(out), nil
 }

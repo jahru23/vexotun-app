@@ -6,12 +6,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/xjasonlyu/tun2socks/v2/engine"
 )
 
 type TunnelConfig struct {
@@ -69,9 +68,6 @@ func Prepare(configJSON string, protector SocketProtector, logger LogHandler) er
 		stateMu.Unlock()
 	}
 
-	debug.SetMemoryLimit(48 << 20)
-	debug.SetGCPercent(40)
-
 	setLogHandler(logger)
 	resetTraffic()
 
@@ -79,6 +75,14 @@ func Prepare(configJSON string, protector SocketProtector, logger LogHandler) er
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		cleanupStart()
 		return fmt.Errorf("parse tunnel config: %w", err)
+	}
+	switch cfg.Mode {
+	case "ssh":
+		debug.SetMemoryLimit(16 << 20)
+		debug.SetGCPercent(25)
+	default:
+		debug.SetMemoryLimit(28 << 20)
+		debug.SetGCPercent(30)
 	}
 	if cfg.MTU <= 0 {
 		cfg.MTU = 1500
@@ -175,6 +179,7 @@ func Prepare(configJSON string, protector SocketProtector, logger LogHandler) er
 	activeHTTPProxy = newHTTPProxy
 	activeCfg = cfg
 	activeSocks = cfg.SocksPort
+	isRunning = true
 	isStarting = false
 	activeStartCancel = nil
 	stateMu.Unlock()
@@ -182,42 +187,13 @@ func Prepare(configJSON string, protector SocketProtector, logger LogHandler) er
 	return nil
 }
 
-// AttachTun attaches tun2socks to tunFd after Prepare has succeeded.
-func AttachTun(tunFd int32) error {
-	stateMu.Lock()
-	if isRunning {
-		stateMu.Unlock()
-		return fmt.Errorf("tun2socks is already running")
-	}
-	if activeSSH == nil && activeXray == nil {
-		stateMu.Unlock()
-		return fmt.Errorf("tunnel core is not prepared")
-	}
-	cfg := activeCfg
-	key := &engine.Key{
-		Device:   fmt.Sprintf("fd://%d", tunFd),
-		Proxy:    fmt.Sprintf("socks5://127.0.0.1:%d", cfg.SocksPort),
-		MTU:      cfg.MTU,
-		LogLevel: "silent",
-	}
-	engine.Insert(key)
-	engine.Start()
-	isRunning = true
-	stateMu.Unlock()
-
-	logMsg("DEBUG", "tun2socks started on fd://%d -> socks5://127.0.0.1:%d", tunFd, cfg.SocksPort)
-	return nil
+// TrimMemory triggers garbage collection and returns unused memory pages to the OS.
+func TrimMemory() {
+	runtime.GC()
+	debug.FreeOSMemory()
 }
 
-// Start initializes the selected tunnel core (SSH or Xray) and attaches tun2socks to tunFd.
-func Start(tunFd int32, configJSON string, protector SocketProtector, logger LogHandler) error {
-	if err := Prepare(configJSON, protector, logger); err != nil {
-		return err
-	}
-	return AttachTun(tunFd)
-}
-
-// Stop shuts down tun2socks and the active tunnel core, aborting any in-progress Start immediately.
+// Stop shuts down the active tunnel core, aborting any in-progress Prepare immediately.
 func Stop() {
 	stateMu.Lock()
 	stopSeq++
@@ -243,9 +219,6 @@ func Stop() {
 	}
 
 	logMsg("DEBUG", "Stopping Vexotun core...")
-	if wasRunning {
-		engine.Stop()
-	}
 	if httpProxy != nil {
 		httpProxy.Stop()
 	}
@@ -258,6 +231,7 @@ func Stop() {
 	if bridge != nil {
 		bridge.Stop()
 	}
+	TrimMemory()
 	logMsg("DEBUG", "Vexotun core stopped")
 }
 

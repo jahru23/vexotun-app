@@ -153,6 +153,7 @@ import com.vexotun.app.model.XrayProtocol
 import com.vexotun.app.model.XrayTransport
 import com.vexotun.app.vpn.ConnectionStatus
 import com.vexotun.app.vpn.TrafficStatsState
+import com.vexotun.app.vpn.TunnelState
 import com.vexotun.app.vpn.VexotunVpnService
 import com.vexotun.app.vpn.VpnRuntimeState
 import com.google.zxing.BarcodeFormat
@@ -160,7 +161,6 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
-import core.Core
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
@@ -2357,9 +2357,7 @@ private fun SshProfileEditor(
                         publicKey = s.publicKey.trim()
                     )
                     val rawJson = withContext(Dispatchers.IO) {
-                        runCatching { Core.scanSlowDNS(scanJson.encodeToString(payload), null) }.getOrElse {
-                            "{\"ok\":false,\"error\":\"${it.message ?: "gagal scan"}\"}"
-                        }
+                        TunnelState.scanSlowDns(scanJson.encodeToString(payload))
                     }
                     val resp = runCatching { scanJson.decodeFromString<SlowDnsScanResponseUi>(rawJson) }
                         .getOrElse { SlowDnsScanResponseUi(ok = false, error = it.message ?: "Parse gagal") }

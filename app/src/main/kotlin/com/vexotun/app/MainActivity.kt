@@ -1,6 +1,7 @@
 package com.vexotun.app
 
 import android.Manifest
+import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -23,6 +24,7 @@ import androidx.core.content.ContextCompat
 import com.vexotun.app.ui.main.MainScreen
 import com.vexotun.app.ui.main.MainScreenViewModel
 import com.vexotun.app.ui.theme.VexotunTheme
+import com.vexotun.app.vpn.TunnelState
 
 class MainActivity : ComponentActivity() {
 
@@ -59,6 +61,23 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        TunnelState.bind(this)
+    }
+
+    override fun onStop() {
+        TunnelState.unbind(this)
+        super.onStop()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+            System.gc()
         }
     }
 
