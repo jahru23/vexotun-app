@@ -46,6 +46,11 @@ type SSHConfig struct {
 	PublicKey   string `json:"publicKey"`
 }
 
+type dnsCacheEntry struct {
+	resp      []byte
+	expiresAt time.Time
+}
+
 type sshEngine struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -57,6 +62,8 @@ type sshEngine struct {
 	dead          atomic.Bool
 	connsMu       sync.Mutex
 	activeConns   map[net.Conn]struct{}
+	dnsMu         sync.Mutex
+	dnsCache      map[string]dnsCacheEntry
 }
 
 func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string, socksPort int, protector SocketProtector) (*sshEngine, error) {
@@ -454,7 +461,12 @@ func (e *sshEngine) handleSocks5(clientConn net.Conn) {
 	}
 	port := binary.BigEndian.Uint16(portBuf[:])
 
-	if cmd != 0x01 { // Only CONNECT supported over SSH
+	if cmd == 0x03 { // UDP ASSOCIATE (relay DNS port 53 over SSH TCP)
+		_ = clientConn.SetDeadline(time.Time{})
+		e.handleSocks5UDPAssociate(clientConn)
+		return
+	}
+	if cmd != 0x01 { // Only CONNECT and UDP ASSOCIATE supported over SSH
 		_, _ = clientConn.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
@@ -521,6 +533,214 @@ func (e *sshEngine) handleSocks5(clientConn net.Conn) {
 		bytesDown.Add(n)
 	}()
 	copyWg.Wait()
+}
+
+func (e *sshEngine) handleSocks5UDPAssociate(clientConn net.Conn) {
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		_, _ = clientConn.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
+	defer udpConn.Close()
+
+	uaddr := udpConn.LocalAddr().(*net.UDPAddr)
+	reply := []byte{
+		0x05, 0x00, 0x00, 0x01,
+		127, 0, 0, 1,
+		byte(uaddr.Port >> 8), byte(uaddr.Port & 0xff),
+	}
+	if _, err := clientConn.Write(reply); err != nil {
+		return
+	}
+
+	// Keep TCP control connection open per RFC 1928; closing it tears down the UDP relay.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var drain [64]byte
+		for {
+			if _, rerr := clientConn.Read(drain[:]); rerr != nil {
+				_ = udpConn.Close()
+				return
+			}
+		}
+	}()
+	go func() {
+		select {
+		case <-e.ctx.Done():
+			_ = udpConn.Close()
+		case <-done:
+		}
+	}()
+
+	buf := make([]byte, 4096)
+	for {
+		n, srcAddr, rerr := udpConn.ReadFromUDP(buf)
+		if rerr != nil {
+			return
+		}
+		if n < 10 || buf[2] != 0x00 {
+			continue
+		}
+		hdrLen, dstHost, dstPort, ok := parseSocks5UDPHeader(buf[:n])
+		if !ok || dstPort != 53 || len(buf[hdrLen:n]) < 12 {
+			// Non-DNS UDP (e.g. QUIC :443) is silently dropped so apps fast-fallback to TCP.
+			continue
+		}
+		hdrCopy := append([]byte(nil), buf[:hdrLen]...)
+		queryCopy := append([]byte(nil), buf[hdrLen:n]...)
+		go func(src *net.UDPAddr, hdr, q []byte, host string) {
+			resp, err := e.resolveDNSOverSSH(host, q)
+			if err != nil || len(resp) == 0 {
+				return
+			}
+			pkt := make([]byte, len(hdr)+len(resp))
+			copy(pkt, hdr)
+			copy(pkt[len(hdr):], resp)
+			_, _ = udpConn.WriteToUDP(pkt, src)
+		}(srcAddr, hdrCopy, queryCopy, dstHost)
+	}
+}
+
+func parseSocks5UDPHeader(pkt []byte) (hdrLen int, host string, port uint16, ok bool) {
+	if len(pkt) < 10 {
+		return 0, "", 0, false
+	}
+	atyp := pkt[3]
+	off := 4
+	switch atyp {
+	case 0x01: // IPv4
+		if len(pkt) < off+4+2 {
+			return 0, "", 0, false
+		}
+		host = net.IP(pkt[off : off+4]).String()
+		off += 4
+	case 0x03: // Domain
+		if len(pkt) < off+1 {
+			return 0, "", 0, false
+		}
+		dlen := int(pkt[off])
+		off++
+		if len(pkt) < off+dlen+2 {
+			return 0, "", 0, false
+		}
+		host = string(pkt[off : off+dlen])
+		off += dlen
+	case 0x04: // IPv6
+		if len(pkt) < off+16+2 {
+			return 0, "", 0, false
+		}
+		host = net.IP(pkt[off : off+16]).String()
+		off += 16
+	default:
+		return 0, "", 0, false
+	}
+	port = binary.BigEndian.Uint16(pkt[off : off+2])
+	off += 2
+	return off, host, port, true
+}
+
+func (e *sshEngine) resolveDNSOverSSH(dstHost string, query []byte) ([]byte, error) {
+	if len(query) < 12 {
+		return nil, fmt.Errorf("short dns query")
+	}
+	cacheKey := string(query[2:])
+	now := time.Now()
+	e.dnsMu.Lock()
+	if e.dnsCache != nil {
+		if ent, ok := e.dnsCache[cacheKey]; ok && now.Before(ent.expiresAt) {
+			e.dnsMu.Unlock()
+			out := append([]byte(nil), ent.resp...)
+			if len(out) >= 2 {
+				out[0], out[1] = query[0], query[1]
+			}
+			return out, nil
+		}
+	}
+	e.dnsMu.Unlock()
+
+	target := "1.1.1.1:53"
+	if dstHost != "" && dstHost != "127.0.0.1" && dstHost != "::1" {
+		target = net.JoinHostPort(dstHost, "53")
+	}
+
+	type dialRes struct {
+		c   net.Conn
+		err error
+	}
+	dCh := make(chan dialRes, 1)
+	go func() {
+		rc, derr := e.client.Dial("tcp", target)
+		if derr != nil && target != "1.1.1.1:53" {
+			rc, derr = e.client.Dial("tcp", "1.1.1.1:53")
+		}
+		dCh <- dialRes{c: rc, err: derr}
+	}()
+
+	var rc net.Conn
+	select {
+	case <-e.ctx.Done():
+		go func() {
+			if r := <-dCh; r.c != nil {
+				_ = r.c.Close()
+			}
+		}()
+		return nil, e.ctx.Err()
+	case <-time.After(8 * time.Second):
+		go func() {
+			if r := <-dCh; r.c != nil {
+				_ = r.c.Close()
+			}
+		}()
+		return nil, fmt.Errorf("dns dial timeout")
+	case r := <-dCh:
+		if r.err != nil {
+			return nil, r.err
+		}
+		rc = r.c
+	}
+	defer rc.Close()
+	_ = rc.SetDeadline(time.Now().Add(8 * time.Second))
+
+	frame := make([]byte, 2+len(query))
+	binary.BigEndian.PutUint16(frame[0:2], uint16(len(query)))
+	copy(frame[2:], query)
+	if _, err := rc.Write(frame); err != nil {
+		return nil, err
+	}
+	bytesUp.Add(int64(len(frame)))
+
+	var lenHdr [2]byte
+	if _, err := io.ReadFull(rc, lenHdr[:]); err != nil {
+		return nil, err
+	}
+	rlen := int(binary.BigEndian.Uint16(lenHdr[:]))
+	if rlen < 12 || rlen > 4096 {
+		return nil, fmt.Errorf("invalid dns tcp response length %d", rlen)
+	}
+	resp := make([]byte, rlen)
+	if _, err := io.ReadFull(rc, resp); err != nil {
+		return nil, err
+	}
+	bytesDown.Add(int64(2 + rlen))
+
+	e.dnsMu.Lock()
+	if e.dnsCache == nil {
+		e.dnsCache = make(map[string]dnsCacheEntry, 128)
+	}
+	if len(e.dnsCache) > 512 {
+		for k, v := range e.dnsCache {
+			if now.After(v.expiresAt) || len(e.dnsCache) > 512 {
+				delete(e.dnsCache, k)
+			}
+		}
+	}
+	e.dnsCache[cacheKey] = dnsCacheEntry{
+		resp:      append([]byte(nil), resp...),
+		expiresAt: time.Now().Add(30 * time.Second),
+	}
+	e.dnsMu.Unlock()
+	return resp, nil
 }
 
 func (e *sshEngine) Stop() {
