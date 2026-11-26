@@ -406,9 +406,12 @@ class VexotunVpnService : VpnService() {
         statsJob?.cancel()
         statsJob = serviceScope.launch {
             while (isActive && !isStopping) {
-                val tStats = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
-                if (tStats != null && tStats.size >= 4) {
-                    TunnelState.updateTraffic(tStats[1], tStats[3])
+                val uiVisible = TunnelState.hasActiveClients()
+                if (uiVisible) {
+                    val tStats = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
+                    if (tStats != null && tStats.size >= 4) {
+                        TunnelState.updateTraffic(tStats[1], tStats[3])
+                    }
                 }
                 val engineAlive = runCatching {
                     Core.isRunning() && TProxyService.TProxyIsRunning()
@@ -427,7 +430,7 @@ class VexotunVpnService : VpnService() {
                     }
                     return@launch
                 }
-                delay(1000L)
+                delay(if (uiVisible) 1000L else 4000L)
             }
         }
     }

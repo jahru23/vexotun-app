@@ -115,8 +115,8 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -196,12 +196,12 @@ fun MainScreen(
     viewModel: MainScreenViewModel = viewModel()
 ) {
     val context = LocalContext.current
-    val config by viewModel.config.collectAsState()
-    val runtime by viewModel.runtimeState.collectAsState()
-    val apps by viewModel.apps.collectAsState()
-    val isPinging by viewModel.isPinging.collectAsState()
-    val isBatchPinging by viewModel.isBatchPinging.collectAsState()
-    val pingResults by viewModel.pingResults.collectAsState()
+    val config by viewModel.config.collectAsStateWithLifecycle()
+    val runtime by viewModel.runtimeState.collectAsStateWithLifecycle()
+    val apps by viewModel.apps.collectAsStateWithLifecycle()
+    val isPinging by viewModel.isPinging.collectAsStateWithLifecycle()
+    val isBatchPinging by viewModel.isBatchPinging.collectAsStateWithLifecycle()
+    val pingResults by viewModel.pingResults.collectAsStateWithLifecycle()
 
     val navStack = remember { mutableStateListOf(NavEntry(AppPage.TUNNEL)) }
     val currentNav = navStack.lastOrNull() ?: NavEntry(AppPage.TUNNEL)
@@ -1565,7 +1565,7 @@ private fun PingStatusChip(
     trafficStateFlow: StateFlow<TrafficStatsState>,
     modifier: Modifier = Modifier
 ) {
-    val traffic by trafficStateFlow.collectAsState()
+    val traffic by trafficStateFlow.collectAsStateWithLifecycle()
     val ping = traffic.pingMs
     val accent = when {
         ping == null -> MaterialTheme.colorScheme.onSurfaceVariant

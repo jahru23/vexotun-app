@@ -17,10 +17,10 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.vexotun.app.ui.main.MainScreen
 import com.vexotun.app.ui.main.MainScreenViewModel
 import com.vexotun.app.ui.theme.VexotunTheme
@@ -49,7 +49,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         handleIncomingUri(intent?.data)
         setContent {
-            val config by viewModel.config.collectAsState()
+            val config by viewModel.config.collectAsStateWithLifecycle()
             VexotunTheme(darkTheme = config.darkTheme) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),

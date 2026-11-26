@@ -366,6 +366,8 @@ object TunnelState {
         registeredClients.remove(client)
     }
 
+    fun hasActiveClients(): Boolean = registeredClients.isNotEmpty()
+
     private fun sendSnapshotTo(client: Messenger) {
         val s = _state.value
         val t = _trafficState.value
