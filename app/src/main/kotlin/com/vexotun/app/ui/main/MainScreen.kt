@@ -104,9 +104,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -437,7 +434,10 @@ fun MainScreen(
                     title = {
                         val titleText = when {
                             currentPage == AppPage.TUNNEL -> "Vexotun"
-                            currentPage == AppPage.CONFIG && editingProfileId != null -> "Edit Config"
+                            currentPage == AppPage.CONFIG && editingProfileId != null -> {
+                                val editMode = config.profiles.firstOrNull { it.id == editingProfileId }?.mode?.label
+                                if (editMode != null) "Edit $editMode" else "Edit Config"
+                            }
                             else -> currentPage.title
                         }
                         Row(
@@ -1952,18 +1952,6 @@ private fun ConfigEditorPage(
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
-
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            TunnelMode.entries.forEachIndexed { index, mode ->
-                SegmentedButton(
-                    selected = profile.mode == mode,
-                    onClick = { onUpdateProfile { it.copy(mode = mode) } },
-                    shape = SegmentedButtonDefaults.itemShape(index, TunnelMode.entries.size)
-                ) {
-                    Text(mode.label)
-                }
-            }
-        }
 
         if (profile.mode == TunnelMode.XRAY) {
             XrayProfileEditor(profile = profile, onUpdateProfile = onUpdateProfile)
