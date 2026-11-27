@@ -44,6 +44,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -364,21 +365,39 @@ fun MainScreen(
                 modifier = Modifier.width(280.dp),
                 drawerContainerColor = MaterialTheme.colorScheme.surfaceVariant
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 24.dp)
+                Row(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 22.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text(
-                        "Vexotun",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        "Xray & SSH Tunnel",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF081620),
+                        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                "V",
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 18.sp
+                            )
+                        }
+                    }
+                    Column {
+                        Text(
+                            "Vexotun",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            "Xray & SSH Tunnel",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Spacer(Modifier.height(8.dp))
@@ -421,18 +440,50 @@ fun MainScreen(
                             currentPage == AppPage.CONFIG && editingProfileId != null -> "Edit Config"
                             else -> currentPage.title
                         }
-                        Text(
-                            titleText,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (currentPage == AppPage.TUNNEL) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFF081620),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            "V",
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 13.sp
+                                        )
+                                    }
+                                }
+                            }
+                            Text(
+                                titleText,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     },
                     actions = {
-                        StatusBadge(
-                            status = runtime.status,
-                            modifier = Modifier.padding(end = 12.dp)
-                        )
+                        if (runtime.status == ConnectionStatus.CONNECTED || runtime.status == ConnectionStatus.ERROR) {
+                            val dotColor = if (runtime.status == ConnectionStatus.CONNECTED) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .padding(end = 16.dp)
+                                    .size(9.dp)
+                                    .clip(CircleShape)
+                                    .background(dotColor)
+                            )
+                        }
                     }
                 )
             },
@@ -578,15 +629,12 @@ fun MainScreen(
 
 @Composable
 private fun StatusBadge(status: ConnectionStatus, modifier: Modifier = Modifier) {
+    if (status == ConnectionStatus.DISCONNECTED) return
     val (bg, fg, label) = when (status) {
-        ConnectionStatus.CONNECTED -> Triple(Color(0xFF163835), Color(0xFF4DB6AC), "Terhubung")
+        ConnectionStatus.CONNECTED -> Triple(Color(0xFF103D42), Color(0xFF2EC4B6), "Terhubung")
         ConnectionStatus.CONNECTING -> Triple(Color(0xFF33260D), Color(0xFFF59E0B), "Menghubungkan")
-        ConnectionStatus.ERROR -> Triple(Color(0xFF3B1212), Color(0xFFEF6C6C), "Gagal")
-        ConnectionStatus.DISCONNECTED -> Triple(
-            MaterialTheme.colorScheme.surfaceVariant,
-            MaterialTheme.colorScheme.onSurfaceVariant,
-            "Siap"
-        )
+        ConnectionStatus.ERROR -> Triple(Color(0xFF3B1212), Color(0xFFEF5350), "Gagal")
+        ConnectionStatus.DISCONNECTED -> return
     }
     Box(
         modifier = modifier
@@ -1128,6 +1176,14 @@ private fun TunnelPage(
     val isActive = runtime.status == ConnectionStatus.CONNECTED || runtime.status == ConnectionStatus.CONNECTING
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    var logFilter by rememberSaveable { mutableStateOf("ALL") }
+    val visibleLogs = remember(runtime.logs, logFilter) {
+        when (logFilter) {
+            "INFO" -> runtime.logs.filter { it.level == "INFO" }
+            "ERROR" -> runtime.logs.filter { it.level == "WARN" || it.level == "ERROR" }
+            else -> runtime.logs
+        }
+    }
 
     LazyColumn(
         state = listState,
@@ -1322,7 +1378,12 @@ private fun TunnelPage(
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = if (runtime.status == ConnectionStatus.CONNECTED) {
+                        BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+                    } else {
+                        null
+                    }
                 ) {
                     Column(
                         modifier = Modifier
@@ -1341,13 +1402,18 @@ private fun TunnelPage(
                                         ConnectionStatus.CONNECTED -> "Tunnel Terhubung"
                                         ConnectionStatus.CONNECTING -> "Menghubungkan..."
                                         ConnectionStatus.ERROR -> "Koneksi Gagal"
-                                        ConnectionStatus.DISCONNECTED -> "Siap Dihubungkan"
+                                        ConnectionStatus.DISCONNECTED -> active.name
                                     },
                                     style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "Engine: ${active.mode.label}",
+                                    text = when (runtime.status) {
+                                        ConnectionStatus.DISCONNECTED -> "${active.mode.label} • Tunnel nonaktif"
+                                        else -> "Engine: ${active.mode.label}"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1471,7 +1537,7 @@ private fun TunnelPage(
                             }
                             IconButton(
                                 onClick = {
-                                    val text = runtime.logs.joinToString("\n") {
+                                    val text = visibleLogs.joinToString("\n") {
                                         "[${it.timestamp}] ${it.message}"
                                     }
                                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -1497,23 +1563,58 @@ private fun TunnelPage(
                             }
                         }
                     }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 14.dp, end = 14.dp, bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("ALL" to "Semua", "INFO" to "Info", "ERROR" to "Error").forEach { (key, label) ->
+                            val selected = logFilter == key
+                            Surface(
+                                onClick = { logFilter = key },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (selected) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.background
+                                },
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                                )
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    fontSize = 11.sp,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
         }
 
-        if (runtime.logs.isEmpty()) {
+        if (visibleLogs.isEmpty()) {
             item(key = "log_empty") {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp))
-                        .background(Color(0xFF0B0D0F))
+                        .background(Color(0xFF0B0F13))
                         .padding(24.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        "Belum ada log.",
+                        if (logFilter == "ALL") "Belum ada log." else "Tidak ada log untuk filter ini.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1521,10 +1622,10 @@ private fun TunnelPage(
             }
         } else {
             itemsIndexed(
-                items = runtime.logs,
+                items = visibleLogs,
                 key = { _, entry -> entry.id }
             ) { index, entry ->
-                val isLast = index == runtime.logs.lastIndex
+                val isLast = index == visibleLogs.lastIndex
                 val color = when (entry.level) {
                     "ERROR" -> Color(0xFFEF6C6C)
                     "WARN" -> Color(0xFFF59E0B)

@@ -316,7 +316,7 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 		dialCancel()
 		if derr == nil {
 			if stream, serr := cli.OpenStream(); serr == nil {
-				logMsg("INFO", "SlowDNS terhubung (%s)", strings.ToUpper(cached.cand.QTypeName))
+				logMsg("INFO", "SlowDNS terhubung")
 				logMsg("DEBUG", "SlowDNS VexDNS terhubung cepat via %v (%s • MTU %d)",
 					cached.striped, strings.ToUpper(cached.cand.QTypeName), cached.cand.DownBudget)
 				return &vexSlowDNSConn{
@@ -392,7 +392,7 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 			}
 
 			setCachedSlowDNSRoute(routeKey, cand, striped)
-			logMsg("INFO", "SlowDNS terhubung (%s • %dms)", strings.ToUpper(cand.QTypeName), cand.RTT.Milliseconds())
+			logMsg("INFO", "SlowDNS terhubung")
 			logMsg("DEBUG", "SlowDNS VexDNS terhubung via %v (%s • MTU %d • %dms)",
 				striped, strings.ToUpper(cand.QTypeName), cand.DownBudget, cand.RTT.Milliseconds())
 			return &vexSlowDNSConn{
@@ -539,7 +539,7 @@ func dialSlowDNSLegacy(
 			}
 			conn, dialErr := dialLegacySlowDNSType(ctx, ns, domain, pubkey, dnsHost, remoteAddr, mtu, candidate, 8*time.Second, protector)
 			if dialErr == nil {
-				logMsg("INFO", "SlowDNS terhubung (%s)", candidate)
+				logMsg("INFO", "SlowDNS terhubung")
 				logMsg("DEBUG", "SlowDNS (dnstt-compat): terhubung via %s (%s)", dnsHost, candidate)
 				return conn, nil
 			}

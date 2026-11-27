@@ -124,9 +124,11 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 ?.hostAddress
         } ?: "-"
 
+        val netSummary = if (localIp != "-") "$networkLine • $localIp" else networkLine
         TunnelState.ensureInitialLogs(
             messages = listOf(
-                "Vexotun $versionName • $networkLine"
+                "Perangkat: $deviceLine • Android ${Build.VERSION.RELEASE} ($abi)",
+                "Jaringan: $netSummary"
             ),
             debugMessages = listOf(
                 "App: Vexotun $versionName ($versionCode)",

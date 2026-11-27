@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // LogHandler receives log lines from the Go tunnel core.
@@ -36,15 +35,13 @@ func setLogHandler(h LogHandler) {
 
 func logMsg(level, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	ts := time.Now().Format("15:04:05")
-	line := fmt.Sprintf("[%s] %s", ts, msg)
 
 	globalLogger.mu.RLock()
 	h := globalLogger.handler
 	globalLogger.mu.RUnlock()
 
 	if h != nil {
-		h.OnLog(level, line)
+		h.OnLog(level, msg)
 	}
 }
 
