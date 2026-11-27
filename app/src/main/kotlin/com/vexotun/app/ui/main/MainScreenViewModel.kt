@@ -165,21 +165,34 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun selectProfile(profileId: String) = updateConfig {
-        it.copy(activeProfileId = profileId)
+    fun isTunnelBusy(): Boolean {
+        val status = TunnelState.state.value.status
+        return status == ConnectionStatus.CONNECTED || status == ConnectionStatus.CONNECTING
+    }
+
+    fun isActiveProfileBusy(profileId: String): Boolean {
+        val activeId = _config.value.activeProfile()?.id
+        return isTunnelBusy() && activeId == profileId
+    }
+
+    fun selectProfile(profileId: String) {
+        if (isTunnelBusy()) return
+        updateConfig { it.copy(activeProfileId = profileId) }
     }
 
     fun updateActiveProfile(transform: (TunnelProfile) -> TunnelProfile) = updateConfig { cfg ->
+        if (isTunnelBusy()) return@updateConfig cfg
         val activeId = cfg.activeProfile()?.id ?: return@updateConfig cfg
         val updatedList = cfg.profiles.map { p ->
-            if (p.id == activeId) transform(p) else p
+            if (p.id == activeId && !p.isLocked) transform(p) else p
         }
         cfg.copy(profiles = updatedList)
     }
 
     fun updateProfile(profileId: String, transform: (TunnelProfile) -> TunnelProfile) = updateConfig { cfg ->
+        if (isTunnelBusy() && cfg.activeProfile()?.id == profileId) return@updateConfig cfg
         val updatedList = cfg.profiles.map { p ->
-            if (p.id == profileId) transform(p) else p
+            if (p.id == profileId && !p.isLocked) transform(p) else p
         }
         cfg.copy(profiles = updatedList)
     }
@@ -193,20 +206,20 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         updateConfig { cfg ->
             cfg.copy(
                 profiles = cfg.profiles + newProfile,
-                activeProfileId = newProfile.id
+                activeProfileId = if (isTunnelBusy() && cfg.activeProfileId.isNotBlank()) cfg.activeProfileId else newProfile.id
             )
         }
         return newProfile.id
     }
 
-    fun importFromLinks(rawInput: String): Result<Int> {
+    fun importFromLinks(rawInput: String, pin: String = ""): Result<Int> {
         val trimmed = rawInput.trim()
-        if (trimmed.startsWith("VXT1:")) {
-            return VxtCodec.decode(trimmed.toByteArray(Charsets.UTF_8)).map { imported ->
+        if (trimmed.startsWith("VXT1:") || trimmed.startsWith("VXT2:")) {
+            return VxtCodec.decode(trimmed.toByteArray(Charsets.UTF_8), pin).map { imported ->
                 updateConfig { cfg ->
                     cfg.copy(
                         profiles = cfg.profiles + imported,
-                        activeProfileId = imported.id
+                        activeProfileId = if (isTunnelBusy() && cfg.activeProfileId.isNotBlank()) cfg.activeProfileId else imported.id
                     )
                 }
                 TunnelState.appendLog("INFO", "Config .vxt diimpor: ${imported.name}")
@@ -218,7 +231,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             updateConfig { cfg ->
                 cfg.copy(
                     profiles = cfg.profiles + imported,
-                    activeProfileId = imported.last().id
+                    activeProfileId = if (isTunnelBusy() && cfg.activeProfileId.isNotBlank()) cfg.activeProfileId else imported.last().id
                 )
             }
             imported.size
@@ -235,26 +248,26 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         updateConfig { cfg ->
             cfg.copy(
                 profiles = cfg.profiles + copy,
-                activeProfileId = copy.id
+                activeProfileId = if (isTunnelBusy() && cfg.activeProfileId.isNotBlank()) cfg.activeProfileId else copy.id
             )
         }
     }
 
-    fun importVxtUri(uri: Uri, onResult: ((Result<String>) -> Unit)? = null) {
+    fun importVxtUri(uri: Uri, pin: String = "", onResult: ((Result<String>) -> Unit)? = null) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val bytes = getApplication<Application>().contentResolver.openInputStream(uri)?.use {
                         it.readBytes()
                     } ?: error("Tidak dapat membuka file .vxt")
-                    VxtCodec.decode(bytes).getOrThrow()
+                    VxtCodec.decode(bytes, pin).getOrThrow()
                 }
             }
             val finalResult = result.map { profile ->
                 updateConfig { cfg ->
                     cfg.copy(
                         profiles = cfg.profiles + profile,
-                        activeProfileId = profile.id
+                        activeProfileId = if (isTunnelBusy() && cfg.activeProfileId.isNotBlank()) cfg.activeProfileId else profile.id
                     )
                 }
                 TunnelState.appendLog("INFO", "Config .vxt diimpor: ${profile.name}")
@@ -264,11 +277,15 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun exportVxtBytes(profile: TunnelProfile, lockInfo: VxtLockInfo): ByteArray =
-        VxtCodec.encode(profile, lockInfo)
+    fun exportVxtBytes(profile: TunnelProfile, lockInfo: VxtLockInfo, pin: String = ""): ByteArray {
+        require(!profile.isLocked) { "Config yang sudah terkunci tidak dapat diekspor ulang" }
+        return VxtCodec.encode(profile, lockInfo, pin)
+    }
 
-    fun exportVxtString(profile: TunnelProfile, lockInfo: VxtLockInfo): String =
-        VxtCodec.encode(profile, lockInfo).toString(Charsets.UTF_8)
+    fun exportVxtString(profile: TunnelProfile, lockInfo: VxtLockInfo, pin: String = ""): String {
+        require(!profile.isLocked) { "Config yang sudah terkunci tidak dapat diekspor ulang" }
+        return VxtCodec.encode(profile, lockInfo, pin).toString(Charsets.UTF_8)
+    }
 
     fun runBatchPingCheck() {
         val profiles = _config.value.profiles
@@ -305,6 +322,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun deleteProfile(profileId: String) = updateConfig { cfg ->
+        if (isTunnelBusy() && cfg.activeProfile()?.id == profileId) return@updateConfig cfg
         val remaining = cfg.profiles.filterNot { it.id == profileId }
         val nextActive = when {
             remaining.isEmpty() -> ""

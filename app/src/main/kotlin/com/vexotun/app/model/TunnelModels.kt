@@ -112,6 +112,7 @@ data class VxtLockInfo(
     val hideSni: Boolean = false,
     val hideAuth: Boolean = false,
     val hidePayload: Boolean = false,
+    val hideDns: Boolean = false,
     val author: String = "",
     val note: String = "",
     val expiresAtMs: Long = 0L
