@@ -902,8 +902,6 @@ internal fun SshProfileEditor(
     }
 }
 
-@Composable
-
 internal fun parseSshAccountPaste(raw: String): SshProfile? {
     val text = raw.trim()
     if (text.isBlank()) return null

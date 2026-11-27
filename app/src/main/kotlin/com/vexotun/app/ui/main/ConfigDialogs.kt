@@ -178,6 +178,7 @@ import java.util.Date
 import java.util.Locale
 
 
+@Composable
 internal fun CreateConfigTypeDialog(
     onDismiss: () -> Unit,
     onSelectMode: (TunnelMode) -> Unit
@@ -718,8 +719,6 @@ internal fun VxtCheckRow(label: String, checked: Boolean, onCheckedChange: (Bool
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable
-
 internal fun formatBytes(bytes: Long): String {
     if (bytes < 1024) return "$bytes B"
     val kb = bytes / 1024.0

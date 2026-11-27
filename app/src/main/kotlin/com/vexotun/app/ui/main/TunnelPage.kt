@@ -178,6 +178,8 @@ import java.util.Date
 import java.util.Locale
 
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 internal fun TunnelPage(
     config: VexotunConfig,
     runtime: VpnRuntimeState,
@@ -679,6 +681,7 @@ internal fun TunnelPage(
         }
     }
 }
+@Composable
 internal fun PingStatusChip(
     trafficStateFlow: StateFlow<TrafficStatsState>,
     modifier: Modifier = Modifier

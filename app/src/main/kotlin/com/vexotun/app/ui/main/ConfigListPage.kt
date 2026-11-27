@@ -178,6 +178,7 @@ import java.util.Date
 import java.util.Locale
 
 
+@Composable
 internal fun StatusBadge(status: ConnectionStatus, modifier: Modifier = Modifier) {
     if (status == ConnectionStatus.DISCONNECTED) return
     val (bg, fg, label) = when (status) {

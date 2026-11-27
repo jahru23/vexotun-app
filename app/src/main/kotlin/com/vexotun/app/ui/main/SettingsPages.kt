@@ -178,6 +178,7 @@ import java.util.Date
 import java.util.Locale
 
 
+@Composable
 internal fun SplitTunnelPage(
     config: VexotunConfig,
     apps: List<InstalledApp>,
