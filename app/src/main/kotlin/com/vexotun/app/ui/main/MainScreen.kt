@@ -2377,15 +2377,15 @@ private fun SshProfileEditor(
         CompactDropdown(
             label = "Tipe DNS",
             selectedLabel = s.dnsType.label,
-            options = SlowDnsRecordType.entries,
+            options = SlowDnsRecordType.entries.filter { it.visibleInUi },
             optionLabel = { it.label },
             onSelect = { dt -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsType = dt)) } }
         )
         OutlinedTextField(
             value = s.dnsServer,
             onValueChange = { v -> onUpdateProfile { it.copy(ssh = it.ssh.copy(dnsServer = v.replace("\n", ""))) } },
-            label = { Text("DNS Resolver (Auto = otomatis kartu)") },
-            placeholder = { Text("Auto") },
+            label = { Text("DNS Resolver (opsional)") },
+            placeholder = { Text("Auto (atau isi manual)") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )

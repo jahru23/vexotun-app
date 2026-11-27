@@ -88,8 +88,9 @@ class VexotunVpnService : VpnService() {
                     val replyTo = msg.replyTo ?: return
                     serviceScope.launch {
                         val ms = runCatching {
-                            Core.pingSocksHTTP(socksPort, "https://www.gstatic.com/generate_204", 5000)
+                            Core.pingSocksHTTP(socksPort, "http://connectivitycheck.gstatic.com/generate_204", 8000)
                         }.getOrElse { -1 }
+                        TunnelState.setPing(if (ms >= 0) ms else null)
                         runCatching {
                             replyTo.send(Message.obtain(null, VpnIpc.MSG_PING_RESULT, reqId, ms))
                         }
@@ -308,7 +309,7 @@ class VexotunVpnService : VpnService() {
                 }
 
                 if (canUseMux) {
-                    val muxProbe = Core.pingSocksHTTP(config.socksPort, "https://www.gstatic.com/generate_204", 3500)
+                    val muxProbe = Core.pingSocksHTTP(config.socksPort, "http://connectivitycheck.gstatic.com/generate_204", 3500)
                     if (muxProbe < 0 && !isStopping) {
                         TunnelState.appendLog("WARN", "Server menolak Mux, beralih otomatis ke mode tanpa Mux...")
                         runCatching { Core.stop() }
@@ -521,11 +522,11 @@ class VexotunVpnService : VpnService() {
               address: 127.0.0.1
               udp: 'udp'
             misc:
-              task-stack-size: 32768
-              tcp-buffer-size: 32768
-              udp-recv-buffer-size: 131072
-              udp-copy-buffer-nums: 4
-              max-session-count: 512
+              task-stack-size: 65536
+              tcp-buffer-size: 131072
+              udp-recv-buffer-size: 262144
+              udp-copy-buffer-nums: 8
+              max-session-count: 1024
               connect-timeout: 10000
               tcp-read-write-timeout: 300000
               udp-read-write-timeout: 30000

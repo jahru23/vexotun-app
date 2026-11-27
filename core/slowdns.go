@@ -234,15 +234,12 @@ func makeProtectedPacketFactory(protector SocketProtector) vxtunnel.PacketFactor
 
 func buildSlowDNSResolvers(cfg SSHConfig) []string {
 	dnsRaw := strings.TrimSpace(cfg.DNSServer)
-	typeRaw := strings.ToUpper(strings.TrimSpace(cfg.DNSType))
-	isAutoMode := dnsRaw == "" || strings.EqualFold(dnsRaw, "auto") || strings.EqualFold(dnsRaw, "otomatis") ||
-		typeRaw == "" || typeRaw == "AUTO"
+	hasManualDNS := dnsRaw != "" && !strings.EqualFold(dnsRaw, "auto") && !strings.EqualFold(dnsRaw, "otomatis")
 
 	var raw []string
-	if dnsRaw != "" && !strings.EqualFold(dnsRaw, "auto") && !strings.EqualFold(dnsRaw, "otomatis") {
+	if hasManualDNS {
 		raw = append(raw, dnsRaw)
-	}
-	if isAutoMode {
+	} else {
 		if strings.TrimSpace(cfg.FallbackDNS) != "" {
 			raw = append(raw, cfg.FallbackDNS)
 		}

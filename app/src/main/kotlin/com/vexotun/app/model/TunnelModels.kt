@@ -20,13 +20,17 @@ enum class SshTransport(val wireValue: String, val label: String) {
 }
 
 @Serializable
-enum class SlowDnsRecordType(val wireValue: String, val label: String) {
-    AUTO("AUTO", "Otomatis (VexDNS Multi-Kartu)"),
-    HTTPS("HTTPS", "HTTPS (65)"),
-    SVCB("SVCB", "SVCB (64)"),
+enum class SlowDnsRecordType(
+    val wireValue: String,
+    val label: String,
+    val visibleInUi: Boolean = true
+) {
+    AUTO("AUTO", "Otomatis"),
+    HTTPS("HTTPS", "HTTPS (65)", visibleInUi = false),
+    SVCB("SVCB", "SVCB (64)", visibleInUi = false),
     TXT("TXT", "TXT"),
-    AAAA("AAAA", "AAAA (IPv6)"),
-    A("A", "A (IPv4)"),
+    AAAA("AAAA", "AAAA"),
+    A("A", "A"),
     CAA("CAA", "CAA"),
     CNAME("CNAME", "CNAME"),
     MX("MX", "MX"),

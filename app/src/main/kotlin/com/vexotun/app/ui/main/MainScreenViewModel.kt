@@ -358,17 +358,17 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                             if (active.ssh.host.isNotBlank()) {
                                 pingTcpMs(active.ssh.host.trim(), active.ssh.port, 3000)
                             } else {
-                                pingHttpMs("https://www.gstatic.com/generate_204", 4000)
+                                pingHttpMs("http://connectivitycheck.gstatic.com/generate_204", 4000)
                             }
                         }
                         TunnelMode.XRAY -> {
                             if (active.xray.address.isNotBlank()) {
                                 pingTcpMs(active.xray.address.trim(), active.xray.port, 3000)
                             } else {
-                                pingHttpMs("https://www.gstatic.com/generate_204", 4000)
+                                pingHttpMs("http://connectivitycheck.gstatic.com/generate_204", 4000)
                             }
                         }
-                        null -> pingHttpMs("https://www.gstatic.com/generate_204", 4000)
+                        null -> pingHttpMs("http://connectivitycheck.gstatic.com/generate_204", 4000)
                     }
                 }
             }

@@ -162,7 +162,7 @@ object TunnelState {
                             bytesDown = b.getLong("bytesDown", 0L),
                             speedUpBps = b.getLong("speedUpBps", 0L),
                             speedDownBps = b.getLong("speedDownBps", 0L),
-                            pingMs = if (b.containsKey("pingMs")) b.getInt("pingMs") else null
+                            pingMs = if (b.containsKey("pingMs")) b.getInt("pingMs") else it.pingMs
                         )
                     }
                 }
@@ -294,7 +294,7 @@ object TunnelState {
         }
     }
 
-    suspend fun pingSocks(socksPort: Int, timeoutMs: Long = 6500L): Int {
+    suspend fun pingSocks(socksPort: Int, timeoutMs: Long = 9500L): Int {
         val reqId = nextReqId.getAndIncrement()
         val deferred = CompletableDeferred<Int>()
         pendingPings[reqId] = deferred

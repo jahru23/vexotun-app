@@ -79,11 +79,11 @@ func Prepare(configJSON string, protector SocketProtector, logger LogHandler) er
 	}
 	switch cfg.Mode {
 	case "ssh":
-		debug.SetMemoryLimit(16 << 20)
-		debug.SetGCPercent(25)
+		debug.SetMemoryLimit(40 << 20)
+		debug.SetGCPercent(50)
 	default:
-		debug.SetMemoryLimit(28 << 20)
-		debug.SetGCPercent(30)
+		debug.SetMemoryLimit(56 << 20)
+		debug.SetGCPercent(50)
 	}
 	if cfg.MTU <= 0 {
 		cfg.MTU = 1500

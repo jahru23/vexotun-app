@@ -15,7 +15,7 @@ import (
 
 var httpProxyBufPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 32*1024)
+		b := make([]byte, 64*1024)
 		return &b
 	},
 }

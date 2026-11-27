@@ -21,7 +21,7 @@ import (
 
 var sshCopyBufPool = sync.Pool{
 	New: func() any {
-		buf := make([]byte, 32*1024)
+		buf := make([]byte, 64*1024)
 		return &buf
 	},
 }
