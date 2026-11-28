@@ -66,7 +66,7 @@ data class SlowDnsScanCandidateUi(
 @Serializable
 private data class SlowDnsScanResponseUi(
     val ok: Boolean = false,
-    val candidates: List<SlowDnsScanCandidateUi> = emptyList(),
+    val candidates: List<SlowDnsScanCandidateUi>? = emptyList(),
     val error: String = ""
 )
 
@@ -111,7 +111,12 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     private val _dnsScanState = MutableStateFlow(SlowDnsScanState())
     val dnsScanState: StateFlow<SlowDnsScanState> = _dnsScanState.asStateFlow()
 
-    private val scanJson = Json { ignoreUnknownKeys = true }
+    private val scanJson = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        coerceInputValues = true
+        explicitNulls = false
+    }
 
     fun requestPinForUri(uri: Uri) {
         _pendingExternalPinUri.value = uri
@@ -161,7 +166,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             _dnsScanState.value = if (resp.ok) {
                 SlowDnsScanState(
                     isScanning = false,
-                    candidates = resp.candidates.take(8)
+                    candidates = resp.candidates.orEmpty().take(8)
                 )
             } else {
                 SlowDnsScanState(

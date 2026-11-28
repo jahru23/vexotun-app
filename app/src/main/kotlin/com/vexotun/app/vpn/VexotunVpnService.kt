@@ -114,7 +114,7 @@ class VexotunVpnService : VpnService() {
                         val res = runCatching {
                             Core.scanSlowDNS(payload, null)
                         }.getOrElse {
-                            "{\"ok\":false,\"error\":\"${it.message ?: "gagal scan"}\"}"
+                            "{\"ok\":false,\"error\":${org.json.JSONObject.quote(it.message ?: "gagal scan")}}"
                         }
                         val b = Bundle().apply { putString("result", res) }
                         val reply = Message.obtain(null, VpnIpc.MSG_SCAN_RESULT, reqId, 0).apply {

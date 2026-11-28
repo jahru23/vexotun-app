@@ -489,7 +489,7 @@ internal fun TunnelPage(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    itemsIndexed(visibleLogs, key = { _, entry -> entry.id }) { _, entry ->
+                    itemsIndexed(visibleLogs, key = { idx, entry -> "${idx}_${entry.id}" }) { _, entry ->
                         val color = when (entry.level) {
                             "ERROR" -> LogErrorFg
                             "WARN" -> LogWarnFg
