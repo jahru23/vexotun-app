@@ -1,10 +1,12 @@
 package com.vexotun.app.model
 
-import android.util.Base64
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.net.URLEncoder
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
+@OptIn(ExperimentalEncodingApi::class)
 object LinkExporter {
 
     fun exportShareLink(profile: TunnelProfile): Result<String> = runCatching {
@@ -23,6 +25,16 @@ object LinkExporter {
     }
 
     private fun exportVmess(name: String, x: XrayProfile): String {
+        val typeField = when {
+            x.network == XrayTransport.TCP && x.headerType.equals("http", true) -> "http"
+            x.network == XrayTransport.GRPC && x.grpcMultiMode -> "multi"
+            else -> "none"
+        }
+        val tlsValue = when (x.effectiveSecurityMode()) {
+            XraySecurityMode.REALITY -> "reality"
+            XraySecurityMode.TLS -> "tls"
+            XraySecurityMode.NONE -> ""
+        }
         val obj = buildJsonObject {
             put("v", "2")
             put("ps", name)
@@ -32,24 +44,38 @@ object LinkExporter {
             put("aid", x.alterId.toString())
             put("scy", x.security.ifBlank { "auto" })
             put("net", x.network.wireValue)
-            put("type", "none")
+            put("type", typeField)
             put("host", x.host.trim())
             put("path", x.path.trim())
-            put("tls", if (x.tls) "tls" else "")
+            put("tls", tlsValue)
             put("sni", x.sni.trim())
+            if (x.fingerprint.isNotBlank()) put("fp", x.fingerprint.trim())
+            if (x.alpn.isNotBlank()) put("alpn", x.alpn.trim())
+            if (x.network == XrayTransport.XHTTP && x.xhttpMode.isNotBlank()) put("mode", x.xhttpMode.trim())
+            if (x.allowInsecure) put("allowInsecure", "1")
         }
-        val b64 = Base64.encodeToString(obj.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val b64 = Base64.Default.encode(obj.toString().toByteArray(Charsets.UTF_8))
         return "vmess://$b64"
     }
 
     private fun exportUriBased(scheme: String, name: String, x: XrayProfile): String {
+        val secMode = x.effectiveSecurityMode()
         val params = linkedMapOf(
             "type" to x.network.wireValue,
-            "security" to if (x.tls) "tls" else "none"
+            "security" to secMode.wireValue
         )
         if (x.protocol == XrayProtocol.VLESS) {
             params["encryption"] = "none"
             if (x.flow.isNotBlank()) params["flow"] = x.flow.trim()
+        }
+        if (x.network == XrayTransport.TCP && x.headerType.equals("http", true)) {
+            params["headerType"] = "http"
+        }
+        if (x.network == XrayTransport.GRPC && x.grpcMultiMode) {
+            params["mode"] = "multi"
+        }
+        if (x.network == XrayTransport.XHTTP && x.xhttpMode.isNotBlank()) {
+            params["mode"] = x.xhttpMode.trim()
         }
         if (x.host.isNotBlank()) params["host"] = x.host.trim()
         if (x.sni.isNotBlank()) params["sni"] = x.sni.trim()
@@ -60,7 +86,17 @@ object LinkExporter {
                 params["path"] = x.path.trim()
             }
         }
-        if (x.allowInsecure) params["allowInsecure"] = "1"
+        if (x.fingerprint.isNotBlank()) params["fp"] = x.fingerprint.trim()
+        if (x.alpn.isNotBlank()) params["alpn"] = x.alpn.trim()
+        if (secMode == XraySecurityMode.TLS) {
+            if (x.verifyPeerCertByName.isNotBlank()) params["vcn"] = x.verifyPeerCertByName.trim()
+            if (x.pinnedPeerCertSha256.isNotBlank()) params["pcs"] = x.pinnedPeerCertSha256.trim()
+            if (x.allowInsecure) params["allowInsecure"] = "1"
+        } else if (secMode == XraySecurityMode.REALITY) {
+            if (x.realityPublicKey.isNotBlank()) params["pbk"] = x.realityPublicKey.trim()
+            if (x.realityShortId.isNotBlank()) params["sid"] = x.realityShortId.trim()
+            if (x.realitySpiderX.isNotBlank()) params["spx"] = x.realitySpiderX.trim()
+        }
 
         val query = params.entries.joinToString("&") { (k, v) -> "${enc(k)}=${enc(v)}" }
         val user = enc(x.id.trim())
@@ -71,10 +107,8 @@ object LinkExporter {
 
     private fun exportShadowsocks(name: String, x: XrayProfile): String {
         val method = x.security.ifBlank { "aes-128-gcm" }
-        val userInfo = Base64.encodeToString(
-            "$method:${x.id.trim()}".toByteArray(Charsets.UTF_8),
-            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
-        )
+        val userInfo = Base64.UrlSafe.withPadding(Base64.PaddingOption.ABSENT)
+            .encode("$method:${x.id.trim()}".toByteArray(Charsets.UTF_8))
         val host = x.address.trim().let { if (it.contains(":") && !it.startsWith("[")) "[$it]" else it }
         val frag = enc(name.ifBlank { x.address.trim() })
         return "ss://$userInfo@$host:${x.port}#$frag"

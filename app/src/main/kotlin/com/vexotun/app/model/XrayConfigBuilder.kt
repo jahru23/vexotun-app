@@ -1,6 +1,5 @@
 package com.vexotun.app.model
 
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -13,17 +12,23 @@ object XrayConfigBuilder {
         profile: XrayProfile,
         dnsServer: String = "8.8.8.8",
         bypassLan: Boolean = true,
-        muxEnabled: Boolean = true
+        muxEnabled: Boolean = false,
+        useDohDns: Boolean = false
     ): String {
         val outbound = buildOutbound(profile, muxEnabled)
         val effectiveDns = dnsServer.trim().ifBlank { "8.8.8.8" }
         val root = buildJsonObject {
-            put("log", buildJsonObject { put("loglevel", "error") })
+            put("log", buildJsonObject { put("loglevel", "warning") })
             put("dns", buildJsonObject {
                 put("queryStrategy", "UseIPv4")
                 put("servers", buildJsonArray {
-                    add(JsonPrimitive(effectiveDns))
-                    if (effectiveDns != "1.1.1.1") add(JsonPrimitive("1.1.1.1"))
+                    if (useDohDns) {
+                        add(JsonPrimitive("https://1.1.1.1/dns-query"))
+                        add(JsonPrimitive("https://dns.google/dns-query"))
+                    } else {
+                        add(JsonPrimitive(effectiveDns))
+                        if (effectiveDns != "1.1.1.1") add(JsonPrimitive("1.1.1.1"))
+                    }
                 })
             })
             put("outbounds", buildJsonArray {
@@ -58,7 +63,7 @@ object XrayConfigBuilder {
         return root.toString()
     }
 
-    private fun buildOutbound(p: XrayProfile, muxEnabled: Boolean = true): JsonObject {
+    private fun buildOutbound(p: XrayProfile, muxEnabled: Boolean): JsonObject {
         val settings = when (p.protocol) {
             XrayProtocol.VMESS -> buildJsonObject {
                 put("vnext", buildJsonArray {
@@ -116,38 +121,66 @@ object XrayConfigBuilder {
 
         val effectiveHost = p.host.trim().ifBlank { p.address.trim() }
         val effectiveSni = p.sni.trim().ifBlank { effectiveHost }
+        val secMode = p.effectiveSecurityMode()
+        val effectiveFp = p.fingerprint.trim().ifBlank { "chrome" }
 
         val streamSettings = buildJsonObject {
             put("network", p.network.wireValue)
-            put("security", if (p.tls) "tls" else "none")
+            put("security", secMode.wireValue)
 
-            if (p.tls) {
-                put("tlsSettings", buildJsonObject {
+            when (secMode) {
+                XraySecurityMode.TLS -> put("tlsSettings", buildJsonObject {
                     put("serverName", effectiveSni)
-                    put("fingerprint", "chrome")
-                    val alpnList = when (p.network) {
-                        XrayTransport.GRPC -> listOf("h2")
-                        XrayTransport.WS, XrayTransport.HTTPUPGRADE -> listOf("http/1.1")
-                        XrayTransport.XHTTP, XrayTransport.TCP -> listOf("h2", "http/1.1")
-                    }
+                    put("fingerprint", effectiveFp)
+                    val alpnList = p.alpn.split(',')
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .ifEmpty {
+                            when (p.network) {
+                                XrayTransport.GRPC -> listOf("h2")
+                                XrayTransport.WS, XrayTransport.HTTPUPGRADE -> listOf("http/1.1")
+                                XrayTransport.XHTTP, XrayTransport.TCP -> listOf("h2", "http/1.1")
+                            }
+                        }
                     put("alpn", buildJsonArray {
                         alpnList.forEach { add(JsonPrimitive(it)) }
                     })
+                    if (p.verifyPeerCertByName.isNotBlank()) {
+                        put("verifyPeerCertByName", p.verifyPeerCertByName.trim())
+                    }
+                    if (p.pinnedPeerCertSha256.isNotBlank()) {
+                        put("pinnedPeerCertSha256", p.pinnedPeerCertSha256.trim())
+                    }
                 })
+
+                XraySecurityMode.REALITY -> put("realitySettings", buildJsonObject {
+                    put("show", false)
+                    put("fingerprint", if (effectiveFp == "unsafe" || effectiveFp == "hellogolang") "chrome" else effectiveFp)
+                    put("serverName", effectiveSni)
+                    put("publicKey", p.realityPublicKey.trim().trimEnd('='))
+                    put("shortId", p.realityShortId.trim())
+                    put("spiderX", p.realitySpiderX.trim().let { if (it.startsWith("/")) it else "/$it" })
+                })
+
+                XraySecurityMode.NONE -> Unit
             }
 
             when (p.network) {
                 XrayTransport.WS -> put("wsSettings", buildJsonObject {
                     put("path", p.path.trim().ifBlank { "/" })
                     if (effectiveHost.isNotBlank()) {
-                        put("headers", buildJsonObject {
-                            put("Host", effectiveHost)
-                        })
+                        put("host", effectiveHost)
                     }
                 })
 
                 XrayTransport.GRPC -> put("grpcSettings", buildJsonObject {
                     put("serviceName", p.path.trim())
+                    if (p.grpcMultiMode) {
+                        put("multiMode", true)
+                    }
+                    if (p.host.isNotBlank()) {
+                        put("authority", p.host.trim())
+                    }
                 })
 
                 XrayTransport.HTTPUPGRADE -> put("httpupgradeSettings", buildJsonObject {
@@ -162,10 +195,31 @@ object XrayConfigBuilder {
                     if (effectiveHost.isNotBlank()) {
                         put("host", effectiveHost)
                     }
+                    if (p.xhttpMode.isNotBlank()) {
+                        put("mode", p.xhttpMode.trim())
+                    }
                 })
 
                 XrayTransport.TCP -> {
-                    // Default raw TCP
+                    if (p.headerType.equals("http", true)) {
+                        put("tcpSettings", buildJsonObject {
+                            put("header", buildJsonObject {
+                                put("type", "http")
+                                put("request", buildJsonObject {
+                                    put("path", buildJsonArray {
+                                        add(JsonPrimitive(p.path.trim().ifBlank { "/" }))
+                                    })
+                                    if (effectiveHost.isNotBlank()) {
+                                        put("headers", buildJsonObject {
+                                            put("Host", buildJsonArray {
+                                                add(JsonPrimitive(effectiveHost))
+                                            })
+                                        })
+                                    }
+                                })
+                            })
+                        })
+                    }
                 }
             }
 
@@ -177,6 +231,7 @@ object XrayConfigBuilder {
 
         val useMux = muxEnabled &&
             p.muxEnabled &&
+            p.protocol != XrayProtocol.SHADOWSOCKS &&
             p.flow.isBlank() &&
             p.network != XrayTransport.GRPC &&
             p.network != XrayTransport.XHTTP
@@ -190,7 +245,7 @@ object XrayConfigBuilder {
                     put("enabled", true)
                     put("concurrency", 8)
                     put("xudpConcurrency", 8)
-                    put("xudpProxyUDP443", "reject")
+                    put("xudpProxyUDP443", "allow")
                 })
             }
         }

@@ -1,6 +1,5 @@
 package com.vexotun.app.model
 
-import android.util.Base64
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -13,6 +12,8 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 class VxtPinRequiredException : IllegalStateException("File .vxt ini dilindungi PIN")
 
@@ -22,6 +23,7 @@ private data class VxtEnvelope(
     val profile: TunnelProfile
 )
 
+@OptIn(ExperimentalEncodingApi::class)
 object VxtCodec {
     private const val HEADER_V1 = "VXT1:"
     private const val HEADER_V2 = "VXT2:"
@@ -29,6 +31,8 @@ object VxtCodec {
     private const val PBKDF2_ITERATIONS = 12_000
     private val json = Json { ignoreUnknownKeys = true }
     private val random = SecureRandom()
+    private val urlSafeNoPad = Base64.UrlSafe.withPadding(Base64.PaddingOption.ABSENT)
+    private val urlSafeAnyPad = Base64.UrlSafe.withPadding(Base64.PaddingOption.ABSENT_OPTIONAL)
 
     private fun deriveLegacyKey(): SecretKeySpec {
         val digest = MessageDigest.getInstance("SHA-256").digest(KEY_SEED.toByteArray(Charsets.UTF_8))
@@ -71,7 +75,7 @@ object VxtCodec {
             val combined = ByteArray(iv.size + encrypted.size)
             System.arraycopy(iv, 0, combined, 0, iv.size)
             System.arraycopy(encrypted, 0, combined, iv.size, encrypted.size)
-            val encoded = Base64.encodeToString(combined, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            val encoded = urlSafeNoPad.encode(combined)
             (HEADER_V1 + encoded).toByteArray(Charsets.UTF_8)
         } else {
             val salt = ByteArray(16).also { random.nextBytes(it) }
@@ -82,7 +86,7 @@ object VxtCodec {
             System.arraycopy(salt, 0, combined, 0, salt.size)
             System.arraycopy(iv, 0, combined, salt.size, iv.size)
             System.arraycopy(encrypted, 0, combined, salt.size + iv.size, encrypted.size)
-            val encoded = Base64.encodeToString(combined, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            val encoded = urlSafeNoPad.encode(combined)
             (HEADER_V2 + encoded).toByteArray(Charsets.UTF_8)
         }
     }
@@ -91,8 +95,8 @@ object VxtCodec {
         val raw = bytes.toString(Charsets.UTF_8).trim()
         val plainBytes: ByteArray = when {
             raw.startsWith(HEADER_V1) -> {
-                val payloadB64 = raw.removePrefix(HEADER_V1).trim()
-                val combined = Base64.decode(payloadB64, Base64.URL_SAFE or Base64.NO_WRAP)
+                val payloadB64 = raw.removePrefix(HEADER_V1).filterNot(Char::isWhitespace)
+                val combined = urlSafeAnyPad.decode(payloadB64)
                 require(combined.size > 12) { "Data file .vxt rusak" }
                 val iv = combined.copyOfRange(0, 12)
                 val ciphertext = combined.copyOfRange(12, combined.size)
@@ -103,8 +107,8 @@ object VxtCodec {
             raw.startsWith(HEADER_V2) -> {
                 val cleanPin = pin.trim()
                 if (cleanPin.isEmpty()) throw VxtPinRequiredException()
-                val payloadB64 = raw.removePrefix(HEADER_V2).trim()
-                val combined = Base64.decode(payloadB64, Base64.URL_SAFE or Base64.NO_WRAP)
+                val payloadB64 = raw.removePrefix(HEADER_V2).filterNot(Char::isWhitespace)
+                val combined = urlSafeAnyPad.decode(payloadB64)
                 require(combined.size > 28) { "Data file .vxt rusak" }
                 val salt = combined.copyOfRange(0, 16)
                 val iv = combined.copyOfRange(16, 28)

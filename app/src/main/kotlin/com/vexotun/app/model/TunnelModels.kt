@@ -57,6 +57,13 @@ enum class XrayTransport(val wireValue: String, val label: String) {
 }
 
 @Serializable
+enum class XraySecurityMode(val wireValue: String, val label: String) {
+    NONE("none", "Non-TLS"),
+    TLS("tls", "TLS"),
+    REALITY("reality", "Reality")
+}
+
+@Serializable
 enum class SplitTunnelMode {
     ALL_APPS,
     INCLUDE_ONLY,
@@ -77,10 +84,13 @@ data class SshProfile(
     val payload: String = "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]",
     val wsPath: String = "/",
     val wsHost: String = "",
+    val wsRawUpgrade: Boolean = false,
+    val udpgwPort: Int = 0,
     val dnsServer: String = "Auto",
     val dnsType: SlowDnsRecordType = SlowDnsRecordType.AUTO,
     val nameserver: String = "",
-    val publicKey: String = ""
+    val publicKey: String = "",
+    val slowDnsMode: String = "auto"
 )
 
 @Serializable
@@ -94,16 +104,30 @@ data class XrayProfile(
     val flow: String = "",
     val network: XrayTransport = XrayTransport.WS,
     val tls: Boolean = true,
+    val securityMode: XraySecurityMode? = null,
     val sni: String = "",
     val host: String = "",
     val path: String = "",
+    val headerType: String = "",
+    val grpcMultiMode: Boolean = false,
+    val xhttpMode: String = "",
+    val fingerprint: String = "",
+    val alpn: String = "",
+    val verifyPeerCertByName: String = "",
+    val pinnedPeerCertSha256: String = "",
+    val realityPublicKey: String = "",
+    val realityShortId: String = "",
+    val realitySpiderX: String = "/",
     val allowInsecure: Boolean = false,
     val useCustomPayload: Boolean = false,
     val proxyHost: String = "",
     val proxyPort: Int = 8080,
     val payload: String = "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]",
-    val muxEnabled: Boolean = true
-)
+    val muxEnabled: Boolean = false
+) {
+    fun effectiveSecurityMode(): XraySecurityMode =
+        securityMode ?: if (tls) XraySecurityMode.TLS else XraySecurityMode.NONE
+}
 
 @Serializable
 data class VxtLockInfo(
@@ -145,14 +169,14 @@ data class TunnelProfile(
             "${ssh.transport.label} • $hostPart"
         }
         TunnelMode.XRAY -> {
-            val tlsTag = if (xray.tls) "TLS" else "Non-TLS"
+            val secTag = xray.effectiveSecurityMode().label
             val hostPart = if (lockInfo?.hideHost == true) {
                 "Server Terkunci"
             } else {
                 val h = xray.address.ifBlank { "Host belum diisi" }
                 "$h:${xray.port}"
             }
-            "${xray.protocol.label} • ${xray.network.label} $tlsTag • $hostPart"
+            "${xray.protocol.label} • ${xray.network.label} $secTag • $hostPart"
         }
     }
 }
@@ -171,7 +195,10 @@ data class VexotunConfig(
     val autoReconnect: Boolean = true,
     val bypassLan: Boolean = true,
     val wakeLock: Boolean = false,
-    val allowLan: Boolean = false
+    val allowLan: Boolean = false,
+    val verifyXrayConnection: Boolean = true,
+    val allowIpv6Routing: Boolean = false,
+    val useDohDns: Boolean = false
 ) {
     fun activeProfile(): TunnelProfile? =
         profiles.firstOrNull { it.id == activeProfileId } ?: profiles.firstOrNull()
@@ -191,11 +218,14 @@ data class CoreSshPayload(
     val payload: String,
     val wsPath: String,
     val wsHost: String,
+    val wsRawUpgrade: Boolean = false,
+    val udpgwPort: Int = 0,
     val dnsServer: String = "Auto",
     val fallbackDns: String = "",
     val dnsType: String = "AUTO",
     val nameserver: String = "",
-    val publicKey: String = ""
+    val publicKey: String = "",
+    val slowDnsMode: String = "auto"
 )
 
 @Serializable
@@ -218,7 +248,9 @@ data class CoreTunnelConfig(
     val allowLan: Boolean = false,
     val ssh: CoreSshPayload,
     val xrayConfigJson: String,
-    val xrayPayload: CoreXrayPayload = CoreXrayPayload()
+    val xrayPayload: CoreXrayPayload = CoreXrayPayload(),
+    val xrayVerify: Boolean = true,
+    val xrayAllowInsecure: Boolean = false
 )
 
 @Serializable
