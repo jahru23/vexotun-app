@@ -21,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.vexotun.app.model.VxtPinRequiredException
 import com.vexotun.app.ui.main.MainScreen
 import com.vexotun.app.ui.main.MainScreenViewModel
 import com.vexotun.app.ui.theme.VexotunTheme
@@ -90,11 +91,15 @@ class MainActivity : ComponentActivity() {
     private fun handleIncomingUri(uri: Uri?) {
         if (uri == null) return
         viewModel.importVxtUri(uri) { result ->
-            val msg = result.fold(
-                onSuccess = { name -> "Config .vxt diimpor: $name" },
-                onFailure = { err -> err.message ?: "Gagal membaca file .vxt" }
-            )
-            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            result.onSuccess { name ->
+                Toast.makeText(this, "Config .vxt diimpor: $name", Toast.LENGTH_LONG).show()
+            }.onFailure { err ->
+                if (err is VxtPinRequiredException) {
+                    viewModel.requestPinForUri(uri)
+                } else {
+                    Toast.makeText(this, err.message ?: "Gagal membaca file .vxt", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 

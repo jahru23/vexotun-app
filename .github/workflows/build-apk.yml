@@ -2,7 +2,7 @@ name: Build & Release Vexotun APK
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'feat/**' ]
     tags: [ 'v*' ]
   workflow_dispatch:
 
@@ -56,6 +56,11 @@ jobs:
           curl -fSL https://github.com/heiher/hev-socks5-tunnel/releases/download/2.20.0/hev-socks5-tunnel.aar -o app/libs/hev-socks5-tunnel.aar
           echo "ae8a2e96b80b4eccccd037805a4bb4a278090c89dbcae8bc6fcb7634e9a255b9  app/libs/hev-socks5-tunnel.aar" | sha256sum -c -
 
+      - name: Run Go core tests (-race)
+        run: |
+          cd core
+          go test -race ./...
+
       - name: Build Go tunnel core (arm64 + armv7 stripped)
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
@@ -64,6 +69,11 @@ jobs:
           mkdir -p app/libs
           cd core
           gomobile bind -target=android/arm64,android/arm -androidapi=24 -ldflags="-s -w" -o ../app/libs/tunelcore.aar .
+
+      - name: Run Kotlin unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest --no-daemon
 
       - name: Decode Release Keystore
         run: |

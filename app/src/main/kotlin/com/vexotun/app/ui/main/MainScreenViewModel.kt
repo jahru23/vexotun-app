@@ -76,6 +76,17 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     private val _pingResults = MutableStateFlow<Map<String, Int>>(emptyMap())
     val pingResults: StateFlow<Map<String, Int>> = _pingResults.asStateFlow()
 
+    private val _pendingExternalPinUri = MutableStateFlow<Uri?>(null)
+    val pendingExternalPinUri: StateFlow<Uri?> = _pendingExternalPinUri.asStateFlow()
+
+    fun requestPinForUri(uri: Uri) {
+        _pendingExternalPinUri.value = uri
+    }
+
+    fun clearPendingExternalPinUri() {
+        _pendingExternalPinUri.value = null
+    }
+
     init {
         logDeviceAndNetworkInfo()
     }

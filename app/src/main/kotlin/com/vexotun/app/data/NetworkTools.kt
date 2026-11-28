@@ -12,10 +12,13 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URL
 import java.net.URLEncoder
+import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import javax.net.ssl.SNIHostName
+import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
-import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 data class IpInfoResult(
     val ok: Boolean,
@@ -35,6 +38,7 @@ data class HostCheckResult(
     val tcpMs: Int = -1,
     val tlsMs: Int = -1,
     val tlsProtocol: String = "",
+    val tlsVerified: Boolean = false,
     val certSubject: String = "",
     val statusLine: String = "",
     val headers: List<Pair<String, String>> = emptyList(),
@@ -72,7 +76,7 @@ object NetworkTools {
             connectTimeout = timeoutMs
             readTimeout = timeoutMs
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "Vexotun/1.7")
+            setRequestProperty("User-Agent", "Vexotun/1.0")
         }
         return try {
             val code = conn.responseCode
@@ -145,12 +149,20 @@ object NetworkTools {
 
             var tlsMs = -1
             var tlsProto = ""
+            var tlsVerified = false
             var certSubject = ""
 
             val ioSock: Socket = if (useTls) {
                 val t1 = SystemClock.elapsedRealtime()
-                val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
-                val sslSock = factory.createSocket(tcpSock, effectiveSni, targetPort, true) as SSLSocket
+                val tm = object : X509TrustManager {
+                    override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+                    override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+                    override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+                }
+                val ctx = SSLContext.getInstance("TLS").apply {
+                    init(null, arrayOf<TrustManager>(tm), SecureRandom())
+                }
+                val sslSock = ctx.socketFactory.createSocket(tcpSock, effectiveSni, targetPort, true) as SSLSocket
                 sslSock.soTimeout = 7000
                 val params = sslSock.sslParameters
                 params.serverNames = listOf(SNIHostName(effectiveSni))
@@ -158,8 +170,23 @@ object NetworkTools {
                 sslSock.startHandshake()
                 tlsMs = (SystemClock.elapsedRealtime() - t1).toInt()
                 tlsProto = sslSock.session.protocol ?: ""
-                val cert = runCatching { sslSock.session.peerCertificates.firstOrNull() as? X509Certificate }.getOrNull()
-                certSubject = cert?.subjectX500Principal?.name.orEmpty()
+                val certs = runCatching { sslSock.session.peerCertificates }.getOrNull()
+                val leaf = certs?.firstOrNull() as? X509Certificate
+                certSubject = leaf?.subjectX500Principal?.name.orEmpty()
+                tlsVerified = runCatching {
+                    val defaultTmf = javax.net.ssl.TrustManagerFactory.getInstance(
+                        javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm()
+                    ).apply { init(null as java.security.KeyStore?) }
+                    val defaultTm = defaultTmf.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
+                    val x509Chain = certs?.filterIsInstance<X509Certificate>()?.toTypedArray().orEmpty()
+                    if (defaultTm != null && x509Chain.isNotEmpty()) {
+                        defaultTm.checkServerTrusted(x509Chain, "RSA")
+                        javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier()
+                            .verify(effectiveSni, sslSock.session)
+                    } else {
+                        false
+                    }
+                }.getOrDefault(false)
                 sslSock
             } else {
                 tcpSock
@@ -168,7 +195,7 @@ object NetworkTools {
             ioSock.use { sock ->
                 val req = "HEAD / HTTP/1.1\r\n" +
                     "Host: $effectiveSni\r\n" +
-                    "User-Agent: Vexotun/1.7\r\n" +
+                    "User-Agent: Vexotun/1.0\r\n" +
                     "Connection: close\r\n\r\n"
                 sock.getOutputStream().write(req.toByteArray(Charsets.US_ASCII))
                 sock.getOutputStream().flush()
@@ -199,6 +226,7 @@ object NetworkTools {
                     tcpMs = tcpMs,
                     tlsMs = tlsMs,
                     tlsProtocol = tlsProto,
+                    tlsVerified = tlsVerified,
                     certSubject = certSubject,
                     statusLine = statusLine.ifBlank { "TCP/TLS terhubung (tanpa respon HTTP)" },
                     headers = headers
@@ -299,7 +327,7 @@ object NetworkTools {
                 requestMethod = "GET"
                 connectTimeout = 8000
                 readTimeout = 12000
-                setRequestProperty("User-Agent", "Vexotun/1.7")
+                setRequestProperty("User-Agent", "Vexotun/1.0")
             }
             try {
                 val start = SystemClock.elapsedRealtime()

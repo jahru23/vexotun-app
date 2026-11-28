@@ -231,6 +231,14 @@ fun MainScreen(
     var pendingVxtBytes by remember { mutableStateOf<ByteArray?>(null) }
     var pendingPinUri by remember { mutableStateOf<Uri?>(null) }
     var pendingPinText by remember { mutableStateOf<String?>(null) }
+    val externalPinUri by viewModel.pendingExternalPinUri.collectAsStateWithLifecycle()
+    LaunchedEffect(externalPinUri) {
+        val ext = externalPinUri
+        if (ext != null) {
+            pendingPinUri = ext
+            viewModel.clearPendingExternalPinUri()
+        }
+    }
     var lastBackPressMs by remember { mutableLongStateOf(0L) }
     val isTunnelBusy = runtime.status == ConnectionStatus.CONNECTED || runtime.status == ConnectionStatus.CONNECTING
 

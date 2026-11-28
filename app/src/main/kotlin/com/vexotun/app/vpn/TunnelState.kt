@@ -87,7 +87,8 @@ private fun currentLogTime(): String = logTimeFormatter.get()!!.format(Date())
 data class VpnRuntimeState(
     val status: ConnectionStatus = ConnectionStatus.DISCONNECTED,
     val statusMessage: String = "Disconnected",
-    val logs: List<LogEntry> = emptyList()
+    val logs: List<LogEntry> = emptyList(),
+    val connectedAtElapsedMs: Long = 0L
 )
 
 data class TrafficStatsState(
@@ -152,7 +153,8 @@ object TunnelState {
                         ConnectionStatus.DISCONNECTED
                     }
                     val message = b.getString("statusMessage") ?: ""
-                    applyStatusLocal(status, message)
+                    val connectedAt = b.getLong("connectedAtElapsedMs", 0L)
+                    applyStatusLocal(status, message, connectedAt)
                 }
                 VpnIpc.MSG_TRAFFIC_UPDATED -> {
                     val b = msg.data
@@ -377,6 +379,7 @@ object TunnelState {
         val bundle = Bundle().apply {
             putInt("statusOrdinal", s.status.ordinal)
             putString("statusMessage", s.statusMessage)
+            putLong("connectedAtElapsedMs", s.connectedAtElapsedMs)
             putLong("bytesUp", t.bytesUp)
             putLong("bytesDown", t.bytesDown)
             putLong("speedUpBps", t.speedUpBps)
@@ -415,10 +418,13 @@ object TunnelState {
             }
         }.getOrElse { emptyList() }
 
+        val connectedAt = b.getLong("connectedAtElapsedMs", 0L)
+
         _state.update { current ->
             current.copy(
                 status = status,
                 statusMessage = statusMessage,
+                connectedAtElapsedMs = if (status == ConnectionStatus.CONNECTED) connectedAt else 0L,
                 logs = if (remoteLogs.isNotEmpty()) remoteLogs else current.logs
             )
         }
@@ -433,7 +439,7 @@ object TunnelState {
         }
     }
 
-    private fun applyStatusLocal(status: ConnectionStatus, message: String) {
+    private fun applyStatusLocal(status: ConnectionStatus, message: String, connectedAtMs: Long = 0L) {
         if (status == ConnectionStatus.DISCONNECTED || status == ConnectionStatus.ERROR) {
             lastSampleTimeMs = 0L
             lastBytesUp = 0L
@@ -442,7 +448,18 @@ object TunnelState {
                 it.copy(bytesUp = 0L, bytesDown = 0L, speedUpBps = 0L, speedDownBps = 0L)
             }
         }
-        _state.update { it.copy(status = status, statusMessage = message) }
+        _state.update { cur ->
+            val nextConnectedAt = if (status == ConnectionStatus.CONNECTED) {
+                when {
+                    connectedAtMs > 0L -> connectedAtMs
+                    cur.connectedAtElapsedMs > 0L -> cur.connectedAtElapsedMs
+                    else -> SystemClock.elapsedRealtime()
+                }
+            } else {
+                0L
+            }
+            cur.copy(status = status, statusMessage = message, connectedAtElapsedMs = nextConnectedAt)
+        }
     }
 
     private fun writeDebugFile(level: String, message: String, timestamp: String) {
@@ -460,11 +477,13 @@ object TunnelState {
     }
 
     fun setStatus(status: ConnectionStatus, message: String) {
-        applyStatusLocal(status, message)
+        val ts = if (status == ConnectionStatus.CONNECTED) SystemClock.elapsedRealtime() else 0L
+        applyStatusLocal(status, message, ts)
         if (isServiceProcess) {
             val bundle = Bundle().apply {
                 putInt("statusOrdinal", status.ordinal)
                 putString("statusMessage", message)
+                putLong("connectedAtElapsedMs", _state.value.connectedAtElapsedMs)
             }
             broadcast(VpnIpc.MSG_STATUS_CHANGED, bundle)
         }

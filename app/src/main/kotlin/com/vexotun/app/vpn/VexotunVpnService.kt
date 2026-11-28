@@ -30,9 +30,13 @@ import com.vexotun.app.model.CoreSshPayload
 import com.vexotun.app.model.CoreTunnelConfig
 import com.vexotun.app.model.CoreXrayPayload
 import com.vexotun.app.model.SplitTunnelMode
+import com.vexotun.app.model.SshTransport
 import com.vexotun.app.model.TunnelMode
+import com.vexotun.app.model.TunnelProfile
 import com.vexotun.app.model.VexotunConfig
 import com.vexotun.app.model.XrayConfigBuilder
+import com.vexotun.app.model.XrayProtocol
+import com.vexotun.app.model.XraySecurityMode
 import com.vexotun.app.model.XrayTransport
 import core.Core
 import core.LogHandler
@@ -43,6 +47,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -196,10 +201,11 @@ class VexotunVpnService : VpnService() {
     }
 
     private fun reconnectTunnel() {
-        startJob?.cancel()
+        val prev = startJob
         startJob = null
         serviceScope.launch {
             TunnelState.appendLog("INFO", "Menyambung ulang...")
+            prev?.cancelAndJoin()
             cleanupResources()
             if (isStopping) return@launch
             val config = ConfigStore(this@VexotunVpnService).load()
@@ -221,6 +227,13 @@ class VexotunVpnService : VpnService() {
             if (profile.lockInfo?.isExpired() == true) {
                 TunnelState.setStatus(ConnectionStatus.ERROR, "Config .vxt sudah kedaluwarsa")
                 TunnelState.appendLog("ERROR", "Config .vxt sudah kedaluwarsa")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return@launch
+            }
+            validateProfileForStart(profile)?.let { validationMsg ->
+                TunnelState.setStatus(ConnectionStatus.ERROR, validationMsg)
+                TunnelState.appendLog("ERROR", validationMsg)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return@launch
@@ -250,6 +263,7 @@ class VexotunVpnService : VpnService() {
 
                 val canUseMux = profile.mode == TunnelMode.XRAY &&
                     profile.xray.muxEnabled &&
+                    profile.xray.protocol != XrayProtocol.SHADOWSOCKS &&
                     profile.xray.flow.isBlank() &&
                     profile.xray.network != XrayTransport.GRPC &&
                     profile.xray.network != XrayTransport.XHTTP
@@ -259,7 +273,8 @@ class VexotunVpnService : VpnService() {
                         profile = profile.xray,
                         dnsServer = config.dnsServer,
                         bypassLan = config.bypassLan,
-                        muxEnabled = canUseMux
+                        muxEnabled = canUseMux,
+                        useDohDns = config.useDohDns
                     )
                 } else {
                     ""
@@ -274,7 +289,7 @@ class VexotunVpnService : VpnService() {
                     allowLan = config.allowLan,
                     ssh = CoreSshPayload(
                         host = profile.ssh.host.trim(),
-                        port = if (profile.ssh.port > 0) profile.ssh.port else if (profile.ssh.transport == com.vexotun.app.model.SshTransport.SLOWDNS) 443 else 22,
+                        port = if (profile.ssh.port > 0) profile.ssh.port else if (profile.ssh.transport == SshTransport.SLOWDNS) 443 else 22,
                         username = profile.ssh.username,
                         password = profile.ssh.password,
                         privateKey = profile.ssh.privateKey,
@@ -285,14 +300,20 @@ class VexotunVpnService : VpnService() {
                         payload = profile.ssh.payload,
                         wsPath = profile.ssh.wsPath.trim(),
                         wsHost = profile.ssh.wsHost.trim(),
+                        wsRawUpgrade = profile.ssh.wsRawUpgrade,
+                        udpgwPort = profile.ssh.udpgwPort,
                         dnsServer = profile.ssh.dnsServer.trim().ifBlank { "Auto" },
                         fallbackDns = underlyingDns,
                         dnsType = profile.ssh.dnsType.wireValue,
                         nameserver = profile.ssh.nameserver.trim(),
-                        publicKey = profile.ssh.publicKey.trim()
+                        publicKey = profile.ssh.publicKey.trim(),
+                        slowDnsMode = profile.ssh.slowDnsMode
                     ),
                     xrayConfigJson = xrayJson,
-                    xrayPayload = xrayPayload
+                    xrayPayload = xrayPayload,
+                    xrayVerify = config.verifyXrayConnection,
+                    xrayAllowInsecure = profile.xray.allowInsecure &&
+                        profile.xray.effectiveSecurityMode() == XraySecurityMode.TLS
                 )
 
                 val protector = SocketProtector { fd -> protect(fd) }
@@ -308,37 +329,19 @@ class VexotunVpnService : VpnService() {
                     return@launch
                 }
 
-                if (canUseMux) {
-                    val muxProbe = Core.pingSocksHTTP(config.socksPort, "http://connectivitycheck.gstatic.com/generate_204", 3500)
-                    if (muxProbe < 0 && !isStopping) {
-                        TunnelState.appendLog("WARN", "Server menolak Mux, beralih otomatis ke mode tanpa Mux...")
-                        runCatching { Core.stop() }
-                        val fallbackJson = XrayConfigBuilder.buildJson(
-                            profile = profile.xray,
-                            dnsServer = config.dnsServer,
-                            bypassLan = config.bypassLan,
-                            muxEnabled = false
-                        )
-                        Core.prepare(json.encodeToString(coreConfig.copy(xrayConfigJson = fallbackJson)), protector, logger)
-                    } else if (muxProbe >= 0) {
-                        TunnelState.appendLog("INFO", "Xray Mux aktif (${muxProbe} ms).")
-                    }
-                }
-
-                if (isStopping) {
-                    runCatching { Core.stop() }
-                    return@launch
-                }
-
                 val effectiveMtu = config.mtu.coerceIn(1280, 1500)
+                val safeDns = sanitizeDnsIp(config.dnsServer)
                 val builder = Builder()
                     .setSession("Vexotun")
                     .setMtu(effectiveMtu)
                     .addAddress("10.0.0.2", 24)
                     .addRoute("0.0.0.0", 0)
-                    .addAddress("fd00:1::2", 64)
-                    .addRoute("::", 0)
-                    .addDnsServer(config.dnsServer.ifBlank { "8.8.8.8" })
+                    .addDnsServer(safeDns)
+
+                if (config.allowIpv6Routing) {
+                    builder.addAddress("fd00:1::2", 64)
+                        .addRoute("::", 0)
+                }
 
                 applySplitTunneling(builder, config)
 
@@ -347,7 +350,7 @@ class VexotunVpnService : VpnService() {
                 tunInterface = pfd
                 TunnelState.appendLog("DEBUG", "VPN interface established")
 
-                val tproxyConf = writeHevConfig(effectiveMtu, config.socksPort)
+                val tproxyConf = writeHevConfig(effectiveMtu, config.socksPort, config.allowIpv6Routing)
                 if (!TProxyService.TProxyStartService(tproxyConf.absolutePath, pfd.fd)) {
                     throw IllegalStateException("Gagal memulai bridge TUN (hev-socks5-tunnel)")
                 }
@@ -509,14 +512,14 @@ class VexotunVpnService : VpnService() {
         }
     }
 
-    private fun writeHevConfig(mtu: Int, socksPort: Int): File {
+    private fun writeHevConfig(mtu: Int, socksPort: Int, ipv6Enabled: Boolean): File {
         val file = File(cacheDir, "tproxy.conf")
+        val ipv6Line = if (ipv6Enabled) "\n              ipv6: 'fd00:1::2'" else ""
         file.writeText(
             """
             tunnel:
               mtu: $mtu
-              ipv4: 10.0.0.2
-              ipv6: 'fd00:1::2'
+              ipv4: 10.0.0.2$ipv6Line
             socks5:
               port: $socksPort
               address: 127.0.0.1
@@ -664,16 +667,64 @@ class VexotunVpnService : VpnService() {
         private const val CHANNEL_ID = "vexotun_vpn_channel"
         private const val NOTIFICATION_ID = 1001
 
+        fun validateProfileForStart(profile: TunnelProfile): String? {
+            return when (profile.mode) {
+                TunnelMode.XRAY -> {
+                    val x = profile.xray
+                    when {
+                        x.address.isBlank() -> "Host / Address Xray belum diisi"
+                        x.port !in 1..65535 -> "Port Xray tidak valid"
+                        x.id.isBlank() -> if (x.protocol == XrayProtocol.VMESS || x.protocol == XrayProtocol.VLESS) {
+                            "UUID Xray belum diisi"
+                        } else {
+                            "Password Xray belum diisi"
+                        }
+                        x.effectiveSecurityMode() == XraySecurityMode.REALITY && x.realityPublicKey.isBlank() ->
+                            "Public Key (pbk) Reality belum diisi"
+                        else -> null
+                    }
+                }
+                TunnelMode.SSH -> {
+                    val s = profile.ssh
+                    when {
+                        s.transport == SshTransport.SLOWDNS -> when {
+                            s.nameserver.isBlank() -> "NS (Nameserver) SlowDNS belum diisi"
+                            s.publicKey.isBlank() -> "Public Key SlowDNS belum diisi"
+                            s.username.isBlank() -> "Username SSH belum diisi"
+                            else -> null
+                        }
+                        s.host.isBlank() -> "Host SSH belum diisi"
+                        s.port !in 1..65535 -> "Port SSH tidak valid"
+                        s.username.isBlank() -> "Username SSH belum diisi"
+                        else -> null
+                    }
+                }
+            }
+        }
+
+        fun sanitizeDnsIp(raw: String): String {
+            val clean = raw.trim().substringBefore(':').trim()
+            val ipv4Regex = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+            if (ipv4Regex.matches(clean)) return clean
+            if (clean.contains(':')) {
+                val bare = raw.trim().removeSurrounding("[", "]")
+                if (bare.isNotBlank() && bare.all { it.isLetterOrDigit() || it == ':' }) return bare
+            }
+            return "8.8.8.8"
+        }
+
         fun friendlyTunnelError(raw: String): String {
             val low = raw.lowercase()
             return when {
                 low.isBlank() -> "Gagal menghubungkan tunnel"
+                "verifikasi koneksi xray gagal" in low ->
+                    "Server Xray tidak merespons atau konfigurasi tidak cocok (periksa host, port, TLS/SNI, path, dan UUID)"
                 "unable to authenticate" in low || "authentication failed" in low || "permission denied" in low ->
                     "Autentikasi gagal: periksa username/password atau masa aktif akun"
                 "no reachable dns tunnel" in low || "tidak mendapat respons" in low ->
-                    "SlowDNS tidak merespons: coba pindah resolver atau tipe DNS (mis. AAAA)"
+                    "SlowDNS tidak merespons: coba pindah resolver atau tipe DNS (mis. TXT / AAAA)"
                 "tls" in low || "handshake" in low || "certificate" in low || "sni" in low ->
-                    "Handshake TLS/SSL gagal: periksa SNI atau port server"
+                    "Handshake TLS/SSL gagal: periksa SNI, port server, atau vcn/Allow Insecure"
                 "i/o timeout" in low || "deadline exceeded" in low || "timed out" in low ->
                     "Koneksi timeout: server atau jaringan tidak merespons"
                 "connection refused" in low || "no route to host" in low || "network is unreachable" in low ->
