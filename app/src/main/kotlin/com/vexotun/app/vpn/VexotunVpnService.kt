@@ -300,7 +300,11 @@ class VexotunVpnService : VpnService() {
                     ""
                 }
 
-                val underlyingDns = detectUnderlyingDnsServers(this@VexotunVpnService)
+                val underlyingDns = buildSlowDnsFallbackResolvers(
+                    this@VexotunVpnService,
+                    profile.ssh.host.trim(),
+                    profile.ssh.nameserver.trim()
+                )
                 val coreConfig = CoreTunnelConfig(
                     mode = if (profile.mode == TunnelMode.SSH) "ssh" else "xray",
                     mtu = config.mtu.coerceIn(1280, 1500),
@@ -786,6 +790,8 @@ class VexotunVpnService : VpnService() {
                     "Autentikasi gagal: periksa username/password atau masa aktif akun"
                 "no reachable dns tunnel" in low || "tidak mendapat respons" in low ->
                     "SlowDNS tidak merespons: coba pindah resolver atau tipe DNS (mis. TXT / AAAA)"
+                "slowdns" in low ->
+                    raw
                 "tls" in low || "handshake" in low || "certificate" in low || "sni" in low ->
                     "Handshake TLS/SSL gagal: periksa SNI, port server, atau vcn/Allow Insecure"
                 "i/o timeout" in low || "deadline exceeded" in low || "timed out" in low ->
@@ -838,6 +844,28 @@ class VexotunVpnService : VpnService() {
                 }
             }
             return (v4 + v6).joinToString(",")
+        }
+
+        fun buildSlowDnsFallbackResolvers(context: Context, sshHost: String, nameserver: String): String {
+            val entries = LinkedHashSet<String>()
+            detectUnderlyingDnsServers(context)
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .forEach { entries.add(it) }
+
+            val cleanHost = sshHost.trim().trim('[', ']')
+            if (cleanHost.isNotEmpty() && !cleanHost.equals(nameserver.trim(), ignoreCase = true)) {
+                runCatching { java.net.InetAddress.getAllByName(cleanHost) }.getOrNull()?.forEach { addr ->
+                    val ip = (addr.hostAddress ?: return@forEach).substringBefore('%')
+                    if (addr is java.net.Inet4Address) {
+                        entries.add("$ip:53")
+                    } else if (addr is java.net.Inet6Address) {
+                        entries.add("[$ip]:53")
+                    }
+                }
+            }
+            return entries.joinToString(",")
         }
 
         fun stop(context: Context) {

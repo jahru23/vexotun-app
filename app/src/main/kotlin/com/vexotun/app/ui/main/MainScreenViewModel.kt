@@ -127,7 +127,11 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             val ctx = getApplication<Application>()
             val underlying = withContext(Dispatchers.IO) {
-                VexotunVpnService.detectUnderlyingDnsServers(ctx)
+                VexotunVpnService.buildSlowDnsFallbackResolvers(
+                    ctx,
+                    ssh.host.trim(),
+                    ssh.nameserver.trim()
+                )
             }
             val payload = CoreSshPayload(
                 host = ssh.host.trim(),

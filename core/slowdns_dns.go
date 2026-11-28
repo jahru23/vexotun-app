@@ -32,7 +32,7 @@ const (
 	// to a maximum of maxPollDelay. The poll timer is reset to
 	// initPollDelay whenever an a send occurs that is not the result of the
 	// poll timer expiring.
-	initPollDelay       = 500 * time.Millisecond
+	initPollDelay       = 200 * time.Millisecond
 	maxPollDelay        = 10 * time.Second
 	pollDelayMultiplier = 2.0
 
