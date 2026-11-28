@@ -164,6 +164,13 @@ func (p *localHTTPProxy) dialViaSocks5(target string) (net.Conn, error) {
 }
 
 func dialViaSocks5Addr(socksAddr string, target string) (net.Conn, error) {
+	return dialViaSocks5AddrWithTimeout(socksAddr, target, 10*time.Second)
+}
+
+func dialViaSocks5AddrWithTimeout(socksAddr string, target string, timeout time.Duration) (net.Conn, error) {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
 	host, portStr, err := net.SplitHostPort(target)
 	if err != nil {
 		return nil, err
@@ -173,13 +180,14 @@ func dialViaSocks5Addr(socksAddr string, target string) (net.Conn, error) {
 		return nil, fmt.Errorf("invalid port: %s", portStr)
 	}
 
-	conn, err := net.DialTimeout("tcp", socksAddr, 10*time.Second)
+	conn, err := net.DialTimeout("tcp", socksAddr, timeout)
 	if err != nil {
 		return nil, err
 	}
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetNoDelay(true)
 	}
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	// SOCKS5 greeting: version 5, 1 auth method, no-auth (0x00)
 	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
@@ -247,6 +255,7 @@ func dialViaSocks5Addr(socksAddr string, target string) (net.Conn, error) {
 		_ = conn.Close()
 		return nil, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 
 	return conn, nil
 }

@@ -27,23 +27,26 @@ var sshCopyBufPool = sync.Pool{
 }
 
 type SSHConfig struct {
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	Username   string `json:"username"`
-	Password   string `json:"password"`
-	PrivateKey string `json:"privateKey"`
-	Transport  string `json:"transport"` // direct, http_proxy, ssl, ws, wss, slowdns
-	ProxyHost  string `json:"proxyHost"`
-	ProxyPort  int    `json:"proxyPort"`
-	SNI        string `json:"sni"`
-	Payload    string `json:"payload"`
-	WSPath     string `json:"wsPath"`
-	WSHost     string `json:"wsHost"`
-	DNSServer   string `json:"dnsServer"`
-	FallbackDNS string `json:"fallbackDns"`
-	DNSType     string `json:"dnsType"`
-	Nameserver  string `json:"nameserver"`
-	PublicKey   string `json:"publicKey"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	PrivateKey   string `json:"privateKey"`
+	Transport    string `json:"transport"` // direct, http_proxy, ssl, ws, wss, slowdns
+	ProxyHost    string `json:"proxyHost"`
+	ProxyPort    int    `json:"proxyPort"`
+	SNI          string `json:"sni"`
+	Payload      string `json:"payload"`
+	WSPath       string `json:"wsPath"`
+	WSHost       string `json:"wsHost"`
+	WSRawUpgrade bool   `json:"wsRawUpgrade,omitempty"`
+	UDPGWPort    int    `json:"udpgwPort,omitempty"`
+	DNSServer    string `json:"dnsServer"`
+	FallbackDNS  string `json:"fallbackDns"`
+	DNSType      string `json:"dnsType"`
+	Nameserver   string `json:"nameserver"`
+	PublicKey    string `json:"publicKey"`
+	SlowDNSMode  string `json:"slowDnsMode,omitempty"` // auto, vexdns, dnstt
 }
 
 type dnsCacheEntry struct {
@@ -54,6 +57,8 @@ type dnsCacheEntry struct {
 type sshEngine struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
+	cfg           SSHConfig
+	listenHost    string
 	transportConn net.Conn
 	client        *ssh.Client
 	listener      net.Listener
@@ -142,6 +147,8 @@ func startSSHEngine(parentCtx context.Context, cfg SSHConfig, listenHost string,
 	eng := &sshEngine{
 		ctx:           ctx,
 		cancel:        cancel,
+		cfg:           cfg,
+		listenHost:    listenHost,
 		transportConn: conn,
 		client:        client,
 		listener:      ln,
@@ -222,52 +229,7 @@ func dialSSHTransport(ctx context.Context, cfg SSHConfig, protector SocketProtec
 		return tlsConn, nil
 
 	case "ws", "wss":
-		scheme := transport
-		dialHost := cfg.Host
-		dialPort := cfg.Port
-		if cfg.ProxyHost != "" && cfg.ProxyPort > 0 {
-			dialHost = cfg.ProxyHost
-			dialPort = cfg.ProxyPort
-		}
-		path := cfg.WSPath
-		if path == "" {
-			path = "/"
-		}
-		if !strings.HasPrefix(path, "/") {
-			path = "/" + path
-		}
-		wsURL := fmt.Sprintf("%s://%s%s", scheme, net.JoinHostPort(dialHost, strconv.Itoa(dialPort)), path)
-		sni := cfg.SNI
-		if sni == "" {
-			sni = cfg.Host
-		}
-		wsHost := cfg.WSHost
-		if wsHost == "" {
-			wsHost = sni
-		}
-
-		logMsg("DEBUG", "Dialing WebSocket %s (Host=%s, SNI=%s)", wsURL, wsHost, sni)
-		d := newProtectedDialer(protector, timeout)
-		wsDialer := websocket.Dialer{
-			NetDialContext:   d.DialContext,
-			HandshakeTimeout: timeout,
-			TLSClientConfig: &tls.Config{
-				ServerName:         sni,
-				InsecureSkipVerify: true,
-			},
-		}
-		headers := http.Header{}
-		headers.Set("Host", wsHost)
-		headers.Set("User-Agent", defaultUserAgent)
-
-		wsConn, resp, err := wsDialer.DialContext(ctx, wsURL, headers)
-		if err != nil {
-			if resp != nil {
-				return nil, fmt.Errorf("WS dial failed (%s): %w", resp.Status, err)
-			}
-			return nil, fmt.Errorf("WS dial failed: %w", err)
-		}
-		return &wsNetConn{conn: wsConn}, nil
+		return dialSSHWebSocket(ctx, cfg, protector, transport, timeout)
 
 	case "slowdns":
 		return dialSlowDNS(ctx, cfg, protector)
@@ -275,6 +237,100 @@ func dialSSHTransport(ctx context.Context, cfg SSHConfig, protector SocketProtec
 	default:
 		return nil, fmt.Errorf("unsupported SSH transport: %s", transport)
 	}
+}
+
+func dialSSHWebSocket(ctx context.Context, cfg SSHConfig, protector SocketProtector, transport string, timeout time.Duration) (net.Conn, error) {
+	dialHost := cfg.Host
+	dialPort := cfg.Port
+	if cfg.ProxyHost != "" && cfg.ProxyPort > 0 {
+		dialHost = cfg.ProxyHost
+		dialPort = cfg.ProxyPort
+	}
+	path := cfg.WSPath
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	sni := cfg.SNI
+	if sni == "" {
+		sni = cfg.Host
+	}
+	wsHost := cfg.WSHost
+	if wsHost == "" {
+		wsHost = sni
+	}
+	dialAddr := net.JoinHostPort(dialHost, strconv.Itoa(dialPort))
+
+	dialRawWS := func() (net.Conn, error) {
+		rawConn, err := dialProtectedTCP(ctx, protector, dialAddr, timeout)
+		if err != nil {
+			return nil, fmt.Errorf("dial WS raw %s: %w", dialAddr, err)
+		}
+		var baseConn net.Conn = rawConn
+		if transport == "wss" {
+			tlsConn := tls.Client(rawConn, &tls.Config{
+				ServerName:         sni,
+				InsecureSkipVerify: true,
+			})
+			if err := tlsConn.HandshakeContext(ctx); err != nil {
+				_ = rawConn.Close()
+				return nil, fmt.Errorf("WSS TLS handshake: %w", err)
+			}
+			baseConn = tlsConn
+		}
+		payload := cfg.Payload
+		if strings.TrimSpace(payload) == "" || strings.HasPrefix(strings.TrimSpace(payload), "GET / HTTP/1.1[crlf]Host: [host]") && path != "/" {
+			if strings.TrimSpace(payload) == "" || wsHost != cfg.Host || path != "/" {
+				payload = fmt.Sprintf(
+					"GET %s HTTP/1.1[crlf]Host: %s[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: [ua][crlf][crlf]",
+					path, wsHost,
+				)
+			}
+		}
+		wrapped, err := injectHTTPPayload(baseConn, payload, cfg.Host, cfg.Port, wsHost)
+		if err != nil {
+			_ = baseConn.Close()
+			return nil, err
+		}
+		return wrapped, nil
+	}
+
+	if cfg.WSRawUpgrade {
+		logMsg("DEBUG", "Dialing SSH WebSocket Raw 101 %s://%s%s (Host=%s, SNI=%s)", transport, dialAddr, path, wsHost, sni)
+		return dialRawWS()
+	}
+
+	wsURL := fmt.Sprintf("%s://%s%s", transport, dialAddr, path)
+	logMsg("DEBUG", "Dialing WebSocket %s (Host=%s, SNI=%s)", wsURL, wsHost, sni)
+	d := newProtectedDialer(protector, timeout)
+	wsDialer := websocket.Dialer{
+		NetDialContext:   d.DialContext,
+		HandshakeTimeout: timeout,
+		TLSClientConfig: &tls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+		},
+	}
+	headers := http.Header{}
+	headers.Set("Host", wsHost)
+	headers.Set("User-Agent", defaultUserAgent)
+
+	wsConn, resp, err := wsDialer.DialContext(ctx, wsURL, headers)
+	if err == nil {
+		return &wsNetConn{conn: wsConn}, nil
+	}
+	if ctx.Err() == nil && (errors.Is(err, websocket.ErrBadHandshake) || (resp != nil && resp.StatusCode == http.StatusSwitchingProtocols)) {
+		logMsg("DEBUG", "Server WS bukan RFC 6455 (%v), beralih ke Raw HTTP 101 Upgrade...", err)
+		if rawConn, rawErr := dialRawWS(); rawErr == nil {
+			return rawConn, nil
+		}
+	}
+	if resp != nil {
+		return nil, fmt.Errorf("WS dial failed (%s): %w", resp.Status, err)
+	}
+	return nil, fmt.Errorf("WS dial failed: %w", err)
 }
 
 func (e *sshEngine) Alive() bool {
@@ -536,7 +592,11 @@ func (e *sshEngine) handleSocks5(clientConn net.Conn) {
 }
 
 func (e *sshEngine) handleSocks5UDPAssociate(clientConn net.Conn) {
-	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	bindIP := net.IPv4(127, 0, 0, 1)
+	if e.listenHost == "0.0.0.0" {
+		bindIP = net.IPv4zero
+	}
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: bindIP, Port: 0})
 	if err != nil {
 		_, _ = clientConn.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
@@ -544,13 +604,25 @@ func (e *sshEngine) handleSocks5UDPAssociate(clientConn net.Conn) {
 	defer udpConn.Close()
 
 	uaddr := udpConn.LocalAddr().(*net.UDPAddr)
+	replyIP := net.IPv4(127, 0, 0, 1).To4()
+	if ta, ok := clientConn.LocalAddr().(*net.TCPAddr); ok {
+		if ip4 := ta.IP.To4(); ip4 != nil {
+			replyIP = ip4
+		}
+	}
 	reply := []byte{
 		0x05, 0x00, 0x00, 0x01,
-		127, 0, 0, 1,
+		replyIP[0], replyIP[1], replyIP[2], replyIP[3],
 		byte(uaddr.Port >> 8), byte(uaddr.Port & 0xff),
 	}
 	if _, err := clientConn.Write(reply); err != nil {
 		return
+	}
+
+	var udpgw *sshUDPGWRelay
+	if e.cfg.UDPGWPort > 0 {
+		udpgw = newSSHUDPGWRelay(e.ctx, e.client, e.cfg.UDPGWPort, udpConn)
+		defer udpgw.Close()
 	}
 
 	// Keep TCP control connection open per RFC 1928; closing it tears down the UDP relay.
@@ -583,22 +655,209 @@ func (e *sshEngine) handleSocks5UDPAssociate(clientConn net.Conn) {
 			continue
 		}
 		hdrLen, dstHost, dstPort, ok := parseSocks5UDPHeader(buf[:n])
-		if !ok || dstPort != 53 || len(buf[hdrLen:n]) < 12 {
-			// Non-DNS UDP (e.g. QUIC :443) is silently dropped so apps fast-fallback to TCP.
+		if !ok {
 			continue
 		}
 		hdrCopy := append([]byte(nil), buf[:hdrLen]...)
-		queryCopy := append([]byte(nil), buf[hdrLen:n]...)
-		go func(src *net.UDPAddr, hdr, q []byte, host string) {
-			resp, err := e.resolveDNSOverSSH(host, q)
-			if err != nil || len(resp) == 0 {
-				return
+		payloadCopy := append([]byte(nil), buf[hdrLen:n]...)
+		if dstPort == 53 && len(payloadCopy) >= 12 {
+			go func(src *net.UDPAddr, hdr, q []byte, host string) {
+				resp, err := e.resolveDNSOverSSH(host, q)
+				if err != nil || len(resp) == 0 {
+					return
+				}
+				pkt := make([]byte, len(hdr)+len(resp))
+				copy(pkt, hdr)
+				copy(pkt[len(hdr):], resp)
+				_, _ = udpConn.WriteToUDP(pkt, src)
+			}(srcAddr, hdrCopy, payloadCopy, dstHost)
+			continue
+		}
+		if udpgw != nil {
+			udpgw.Forward(srcAddr, hdrCopy, dstHost, dstPort, payloadCopy)
+		}
+	}
+}
+
+type udpgwEndpoint struct {
+	src     *net.UDPAddr
+	hdr     []byte
+	lastUse time.Time
+}
+
+type sshUDPGWRelay struct {
+	ctx       context.Context
+	client    *ssh.Client
+	udpgwPort int
+	udpConn   *net.UDPConn
+	mu        sync.Mutex
+	writeMu   sync.Mutex
+	tcpConn   net.Conn
+	nextID    uint16
+	sessions  map[string]uint16
+	reverse   map[uint16]udpgwEndpoint
+	closed    bool
+}
+
+func newSSHUDPGWRelay(ctx context.Context, client *ssh.Client, udpgwPort int, udpConn *net.UDPConn) *sshUDPGWRelay {
+	return &sshUDPGWRelay{
+		ctx:       ctx,
+		client:    client,
+		udpgwPort: udpgwPort,
+		udpConn:   udpConn,
+		sessions:  make(map[string]uint16),
+		reverse:   make(map[uint16]udpgwEndpoint),
+	}
+}
+
+func (r *sshUDPGWRelay) Close() {
+	r.mu.Lock()
+	r.closed = true
+	c := r.tcpConn
+	r.tcpConn = nil
+	r.mu.Unlock()
+	if c != nil {
+		_ = c.Close()
+	}
+}
+
+func (r *sshUDPGWRelay) ensureConn() (net.Conn, error) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	if r.tcpConn != nil {
+		c := r.tcpConn
+		r.mu.Unlock()
+		return c, nil
+	}
+	r.mu.Unlock()
+
+	c, err := r.client.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", r.udpgwPort))
+	if err != nil {
+		return nil, err
+	}
+
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		_ = c.Close()
+		return nil, net.ErrClosed
+	}
+	if r.tcpConn != nil {
+		existing := r.tcpConn
+		r.mu.Unlock()
+		_ = c.Close()
+		return existing, nil
+	}
+	r.tcpConn = c
+	r.mu.Unlock()
+
+	go r.readLoop(c)
+	return c, nil
+}
+
+func (r *sshUDPGWRelay) readLoop(c net.Conn) {
+	defer func() {
+		_ = c.Close()
+		r.mu.Lock()
+		if r.tcpConn == c {
+			r.tcpConn = nil
+		}
+		r.mu.Unlock()
+	}()
+	var lenBuf [2]byte
+	for {
+		if _, err := io.ReadFull(c, lenBuf[:]); err != nil {
+			return
+		}
+		plen := int(binary.LittleEndian.Uint16(lenBuf[:]))
+		if plen < 3 || plen > 8192 {
+			return
+		}
+		body := make([]byte, plen)
+		if _, err := io.ReadFull(c, body); err != nil {
+			return
+		}
+		flags := body[0]
+		if flags&0x01 != 0 { // keepalive
+			continue
+		}
+		connID := binary.LittleEndian.Uint16(body[1:3])
+		addrOff := 9
+		if flags&0x08 != 0 {
+			addrOff = 21
+		}
+		if len(body) <= addrOff {
+			continue
+		}
+		payload := body[addrOff:]
+
+		r.mu.Lock()
+		ep, ok := r.reverse[connID]
+		r.mu.Unlock()
+		if !ok {
+			continue
+		}
+		pkt := make([]byte, len(ep.hdr)+len(payload))
+		copy(pkt, ep.hdr)
+		copy(pkt[len(ep.hdr):], payload)
+		_, _ = r.udpConn.WriteToUDP(pkt, ep.src)
+	}
+}
+
+func (r *sshUDPGWRelay) Forward(src *net.UDPAddr, hdr []byte, dstHost string, dstPort uint16, payload []byte) {
+	ip := net.ParseIP(dstHost)
+	if ip == nil {
+		return
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return
+	}
+	tc, err := r.ensureConn()
+	if err != nil {
+		return
+	}
+
+	key := src.String()
+	r.mu.Lock()
+	connID, ok := r.sessions[key]
+	if !ok {
+		if len(r.sessions) >= 128 {
+			cutoff := time.Now().Add(-30 * time.Second)
+			for k, id := range r.sessions {
+				if ep, exists := r.reverse[id]; !exists || ep.lastUse.Before(cutoff) {
+					delete(r.sessions, k)
+					delete(r.reverse, id)
+				}
 			}
-			pkt := make([]byte, len(hdr)+len(resp))
-			copy(pkt, hdr)
-			copy(pkt[len(hdr):], resp)
-			_, _ = udpConn.WriteToUDP(pkt, src)
-		}(srcAddr, hdrCopy, queryCopy, dstHost)
+		}
+		r.nextID++
+		if r.nextID == 0 {
+			r.nextID = 1
+		}
+		connID = r.nextID
+		r.sessions[key] = connID
+	}
+	r.reverse[connID] = udpgwEndpoint{src: src, hdr: hdr, lastUse: time.Now()}
+	r.mu.Unlock()
+
+	bodyLen := 3 + 4 + 2 + len(payload)
+	pkt := make([]byte, 2+bodyLen)
+	binary.LittleEndian.PutUint16(pkt[0:2], uint16(bodyLen))
+	pkt[2] = 0x00
+	binary.LittleEndian.PutUint16(pkt[3:5], connID)
+	copy(pkt[5:9], ip4)
+	binary.BigEndian.PutUint16(pkt[9:11], dstPort)
+	copy(pkt[11:], payload)
+
+	r.writeMu.Lock()
+	_, werr := tc.Write(pkt)
+	r.writeMu.Unlock()
+	if werr == nil {
+		bytesUp.Add(int64(len(payload)))
 	}
 }
 

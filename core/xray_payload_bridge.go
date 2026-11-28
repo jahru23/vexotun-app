@@ -163,6 +163,11 @@ func rewriteXrayOutboundEndpoint(rawJSON string, bridgePort int) (string, error)
 		if tag != "proxy" {
 			continue
 		}
+		if ss, ok := m["streamSettings"].(map[string]any); ok {
+			if netName, _ := ss["network"].(string); strings.EqualFold(netName, "ws") {
+				logMsg("WARN", "Custom payload aktif pada Xray WebSocket: pastikan payload tidak mengirim 'Upgrade: websocket' ganda")
+			}
+		}
 		settings, ok := m["settings"].(map[string]any)
 		if !ok {
 			continue

@@ -6,13 +6,26 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 const defaultUserAgent = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
+var (
+	rotateRegex  = regexp.MustCompile(`\[rotate=([^\]]+)\]`)
+	rotateSeq    atomic.Uint64
+	splitReplacer = strings.NewReplacer(
+		"[instant_split]", "[split]",
+		"[splitDelay]", "[delay_split]",
+	)
+)
+
 // expandPayload replaces HTTP Injector / HTTP Custom style placeholders and splits into chunks.
+// [host] stays targetHost, while [sni] resolves to sni (falling back to targetHost).
 func expandPayload(template, targetHost string, targetPort int, sni string) []string {
 	if strings.TrimSpace(template) == "" {
 		return []string{
@@ -21,29 +34,61 @@ func expandPayload(template, targetHost string, targetPort int, sni string) []st
 	}
 
 	hostPort := fmt.Sprintf("%s:%d", targetHost, targetPort)
-	effectiveHost := targetHost
-	if sni != "" {
-		effectiveHost = sni
+	portStr := strconv.Itoa(targetPort)
+	effectiveSNI := strings.TrimSpace(sni)
+	if effectiveSNI == "" {
+		effectiveSNI = targetHost
 	}
+	rawConnect := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", hostPort, hostPort)
+
+	withRotate := rotateRegex.ReplaceAllStringFunc(template, func(match string) string {
+		sub := rotateRegex.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		parts := strings.Split(sub[1], ";")
+		if len(parts) == 0 {
+			return ""
+		}
+		idx := rotateSeq.Add(1) - 1
+		return strings.TrimSpace(parts[idx%uint64(len(parts))])
+	})
 
 	replacer := strings.NewReplacer(
 		"[crlf]", "\r\n",
+		"[lfcr]", "\n\r",
 		"[lf]", "\n",
 		"[cr]", "\r",
 		"[host_port]", hostPort,
 		"[ssh]", hostPort,
-		"[host]", effectiveHost,
+		"[host]", targetHost,
+		"[sni]", effectiveSNI,
+		"[port]", portStr,
 		"[protocol]", "HTTP/1.1",
 		"[ua]", defaultUserAgent,
-		"[raw]", fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", hostPort, hostPort),
-		"[real_raw]", fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", hostPort, hostPort),
+		"[raw]", rawConnect,
+		"[real_raw]", rawConnect,
+		"[netData]", rawConnect,
+		"[realData]", rawConnect,
 	)
 
-	expanded := replacer.Replace(template)
+	expanded := replacer.Replace(splitReplacer.Replace(withRotate))
 	return strings.Split(expanded, "[split]")
 }
 
-// injectHTTPPayload writes the expanded payload chunks (honoring [delay_split]) and reads the proxy HTTP response.
+func parseHTTPStatusCode(statusLine string) (int, bool) {
+	fields := strings.Fields(strings.TrimSpace(statusLine))
+	if len(fields) < 2 || !strings.HasPrefix(strings.ToUpper(fields[0]), "HTTP/") {
+		return 0, false
+	}
+	code, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, false
+	}
+	return code, true
+}
+
+// injectHTTPPayload writes the expanded payload chunks (honoring [split]/[delay_split]) and reads the proxy HTTP response.
 // It returns a net.Conn that preserves any buffered bytes already read ahead by bufio.Reader.
 func injectHTTPPayload(conn net.Conn, payloadTemplate, targetHost string, targetPort int, sni string) (net.Conn, error) {
 	chunks := expandPayload(payloadTemplate, targetHost, targetPort, sni)
@@ -88,7 +133,8 @@ func injectHTTPPayload(conn net.Conn, payloadTemplate, targetHost string, target
 	firstLine := strings.TrimSpace(strings.SplitN(headerBuf.String(), "\n", 2)[0])
 	logMsg("DEBUG", "Proxy response: %s", firstLine)
 
-	if !strings.Contains(firstLine, " 200 ") && !strings.Contains(firstLine, " 101 ") {
+	code, ok := parseHTTPStatusCode(firstLine)
+	if !ok || (code != 200 && code != 101) {
 		return nil, fmt.Errorf("proxy rejected tunnel: %s", firstLine)
 	}
 	return &bufferedConn{Conn: conn, r: reader}, nil
