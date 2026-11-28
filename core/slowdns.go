@@ -579,7 +579,7 @@ func scanLegacyDnsttCandidates(
 		qtypeName = rawType
 	}
 
-	ctx, cancel := context.WithTimeout(parentCtx, 3500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(parentCtx, 10500*time.Millisecond)
 	defer cancel()
 
 	ch := make(chan dnsttScanCandidate, len(resolvers))
@@ -594,7 +594,7 @@ func scanLegacyDnsttCandidates(
 		go func() {
 			defer wg.Done()
 			start := time.Now()
-			conn, derr := dialLegacySlowDNSType(ctx, ns, domain, pubkey, res, remoteAddr, mtu, qtypeName, 3*time.Second, protector)
+			conn, derr := dialLegacySlowDNSType(ctx, ns, domain, pubkey, res, remoteAddr, mtu, qtypeName, 10*time.Second, protector)
 			if derr != nil {
 				return
 			}
@@ -726,7 +726,7 @@ func dialSlowDNSLegacy(
 	rawType := strings.ToUpper(strings.TrimSpace(cfg.DNSType))
 	if rawType == "" || rawType == "AUTO" || rawType == "HTTPS" || rawType == "SVCB" || rawType == "AAAA" || rawType == "CAA" || rawType == "SRV" {
 		// Fast pass: TXT across all resolvers concurrently (standard dnstt-server default).
-		conn, usedRes, usedType, derr := dialSlowDNSLegacyParallelBatch(ctx, ns, domain, pubkey, resolvers, mtu, []string{"TXT"}, 4*time.Second, protector)
+		conn, usedRes, usedType, derr := dialSlowDNSLegacyParallelBatch(ctx, ns, domain, pubkey, resolvers, mtu, []string{"TXT"}, 10*time.Second, protector)
 		if derr == nil {
 			logMsg("INFO", "SlowDNS terhubung")
 			logMsg("DEBUG", "SlowDNS (dnstt): terhubung via %s (%s)", usedRes, usedType)
@@ -736,7 +736,7 @@ func dialSlowDNSLegacy(
 			return nil, ctx.Err()
 		}
 		// Fallback pass across alternative legacy QTYPEs.
-		conn, usedRes, usedType, derr2 := dialSlowDNSLegacyParallelBatch(ctx, ns, domain, pubkey, resolvers, mtu, []string{"NULL", "CNAME", "NS", "A", "MX"}, 5*time.Second, protector)
+		conn, usedRes, usedType, derr2 := dialSlowDNSLegacyParallelBatch(ctx, ns, domain, pubkey, resolvers, mtu, []string{"NULL", "CNAME", "NS", "A", "MX"}, 8*time.Second, protector)
 		if derr2 == nil {
 			logMsg("INFO", "SlowDNS terhubung")
 			logMsg("DEBUG", "SlowDNS (dnstt): terhubung via %s (%s)", usedRes, usedType)
@@ -745,7 +745,7 @@ func dialSlowDNSLegacy(
 		return nil, fmt.Errorf("SlowDNS gagal di semua resolver & tipe: %w", derr2)
 	}
 
-	conn, usedRes, usedType, derr := dialSlowDNSLegacyParallelBatch(ctx, ns, domain, pubkey, resolvers, mtu, []string{rawType}, 6*time.Second, protector)
+	conn, usedRes, usedType, derr := dialSlowDNSLegacyParallelBatch(ctx, ns, domain, pubkey, resolvers, mtu, []string{rawType}, 10*time.Second, protector)
 	if derr != nil {
 		return nil, derr
 	}
