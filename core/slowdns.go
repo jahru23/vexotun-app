@@ -280,6 +280,12 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 	}
 
 	resolvers := buildSlowDNSResolvers(cfg)
+	dnsMode := strings.ToLower(strings.TrimSpace(cfg.SlowDNSMode))
+	if dnsMode == "dnstt" {
+		logMsg("DEBUG", "SlowDNS mode=dnstt: langsung dial dnstt standar paralel ke %d resolver", len(resolvers))
+		return dialSlowDNSLegacy(ctx, cfg, ns, pubHex, resolvers, protector)
+	}
+
 	typeRaw := strings.ToUpper(strings.TrimSpace(cfg.DNSType))
 	var qtypes []uint16
 	if typeRaw != "" && typeRaw != "AUTO" && typeRaw != "ANY" {
@@ -333,7 +339,11 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 	logMsg("DEBUG", "SlowDNS VexDNS: memindai %d resolver %v (Type=%s) -> %s",
 		len(resolvers), resolvers, typeLabel, ns)
 
-	probeCtx, probeCancel := context.WithTimeout(ctx, 8*time.Second)
+	probeWindow := 4500 * time.Millisecond
+	if dnsMode == "vexdns" {
+		probeWindow = 8 * time.Second
+	}
+	probeCtx, probeCancel := context.WithTimeout(ctx, probeWindow)
 	cands, probeErr := solver.ProbeAll(probeCtx, solver.Config{
 		Resolvers:    resolvers,
 		Domain:       vxDomain,
@@ -406,14 +416,22 @@ func dialSlowDNS(ctx context.Context, cfg SSHConfig, protector SocketProtector) 
 		logMsg("DEBUG", "Probe VexDNS tidak merespons (%v), mencoba mode dnstt kompatibel...", probeErr)
 	}
 
+	if dnsMode == "vexdns" {
+		if probeErr != nil {
+			return nil, probeErr
+		}
+		return nil, fmt.Errorf("SlowDNS VexDNS gagal di semua kandidat")
+	}
+
 	return dialSlowDNSLegacy(ctx, cfg, ns, pubHex, resolvers, protector)
 }
 
-// ScanSlowDNS probes all configured resolvers and 11 QTYPEs on demand from UI and returns JSON.
+// ScanSlowDNS probes all configured resolvers and 11 QTYPEs (VexDNS + standard dnstt fallback) and returns JSON.
 func ScanSlowDNS(configJSON string, protector SocketProtector) string {
 	type scanCandidate struct {
 		Resolver     string `json:"resolver"`
 		QType        string `json:"qtype"`
+		Mode         string `json:"mode,omitempty"`
 		MTU          int    `json:"mtu"`
 		PayloadBytes int    `json:"payloadBytes"`
 		QueryCap     int    `json:"queryCap"`
@@ -433,38 +451,67 @@ func ScanSlowDNS(configJSON string, protector SocketProtector) string {
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		return encode(scanResult{OK: false, Error: err.Error()})
 	}
-	domain, err := dnswire.ParseName(strings.TrimSpace(cfg.Nameserver))
+	ns := strings.TrimSpace(cfg.Nameserver)
+	domain, err := dnswire.ParseName(ns)
 	if err != nil || len(domain) == 0 {
 		return encode(scanResult{OK: false, Error: "Nameserver (NS) belum valid"})
 	}
-	pubkey, err := vxcrypto.DecodeKey(strings.TrimSpace(cfg.PublicKey))
+	pubHex := strings.TrimSpace(cfg.PublicKey)
+	pubkey, err := vxcrypto.DecodeKey(pubHex)
 	if err != nil {
 		return encode(scanResult{OK: false, Error: "Public Key tidak valid"})
 	}
 	resolvers := buildSlowDNSResolvers(cfg)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	dnsMode := strings.ToLower(strings.TrimSpace(cfg.SlowDNSMode))
+	out := make([]scanCandidate, 0, 8)
+	var lastErr error
 
-	cands, err := solver.ProbeAll(ctx, solver.Config{
-		Resolvers:    resolvers,
-		Domain:       domain,
-		Pubkey:       pubkey,
-		ProbeTimeout: 1200 * time.Millisecond,
-		ListenPacket: makeProtectedPacketFactory(protector),
-	})
-	if err != nil {
-		return encode(scanResult{OK: false, Error: err.Error()})
-	}
-	out := make([]scanCandidate, 0, len(cands))
-	for _, c := range cands {
-		out = append(out, scanCandidate{
-			Resolver:     c.Resolver,
-			QType:        strings.ToUpper(c.QTypeName),
-			MTU:          c.DownBudget,
-			PayloadBytes: c.PayloadBytes,
-			QueryCap:     c.MaxQueryUDP,
-			RTTMs:        c.RTT.Milliseconds(),
+	if dnsMode != "dnstt" {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		cands, perr := solver.ProbeAll(ctx, solver.Config{
+			Resolvers:    resolvers,
+			Domain:       domain,
+			Pubkey:       pubkey,
+			ProbeTimeout: 1200 * time.Millisecond,
+			ListenPacket: makeProtectedPacketFactory(protector),
 		})
+		cancel()
+		lastErr = perr
+		for _, c := range cands {
+			out = append(out, scanCandidate{
+				Resolver:     c.Resolver,
+				QType:        strings.ToUpper(c.QTypeName),
+				Mode:         "vexdns",
+				MTU:          c.DownBudget,
+				PayloadBytes: c.PayloadBytes,
+				QueryCap:     c.MaxQueryUDP,
+				RTTMs:        c.RTT.Milliseconds(),
+			})
+		}
+	}
+
+	if dnsMode == "dnstt" || (dnsMode != "vexdns" && len(out) == 0) {
+		dnsttCands, derr := scanLegacyDnsttCandidates(context.Background(), cfg, ns, pubHex, resolvers, protector)
+		if derr != nil && lastErr == nil {
+			lastErr = derr
+		}
+		for _, dc := range dnsttCands {
+			out = append(out, scanCandidate{
+				Resolver: dc.resolver,
+				QType:    dc.qtype,
+				Mode:     "dnstt",
+				MTU:      dc.mtu,
+				RTTMs:    dc.rttMs,
+			})
+		}
+	}
+
+	if len(out) == 0 {
+		errMsg := "Tidak ada jalur DNS yang merespons"
+		if lastErr != nil {
+			errMsg = lastErr.Error()
+		}
+		return encode(scanResult{OK: false, Error: errMsg})
 	}
 	return encode(scanResult{OK: true, Candidates: out})
 }
@@ -498,6 +545,162 @@ func parseLegacySlowDNSType(raw string) (uint16, string) {
 	}
 }
 
+type dnsttScanCandidate struct {
+	resolver string
+	qtype    string
+	mtu      int
+	rttMs    int64
+}
+
+func scanLegacyDnsttCandidates(
+	parentCtx context.Context,
+	cfg SSHConfig,
+	ns string,
+	pubHex string,
+	resolvers []string,
+	protector SocketProtector,
+) ([]dnsttScanCandidate, error) {
+	domain, err := dns.ParseName(ns)
+	if err != nil {
+		return nil, fmt.Errorf("nameserver tidak valid (%s): %w", ns, err)
+	}
+	pubkey, err := noise.DecodeKey(pubHex)
+	if err != nil {
+		return nil, fmt.Errorf("public key tidak valid: %w", err)
+	}
+	mtu := dnsNameCapacity(domain) - 8 - 1 - numPadding - 1
+	if mtu < 80 {
+		return nil, fmt.Errorf("domain %s terlalu panjang (MTU=%d)", ns, mtu)
+	}
+
+	rawType := strings.ToUpper(strings.TrimSpace(cfg.DNSType))
+	qtypeName := "TXT"
+	if rawType == "NULL" || rawType == "CNAME" || rawType == "NS" || rawType == "A" || rawType == "MX" {
+		qtypeName = rawType
+	}
+
+	ctx, cancel := context.WithTimeout(parentCtx, 3500*time.Millisecond)
+	defer cancel()
+
+	ch := make(chan dnsttScanCandidate, len(resolvers))
+	var wg sync.WaitGroup
+	for _, res := range resolvers {
+		res := res
+		remoteAddr, rerr := net.ResolveUDPAddr("udp", res)
+		if rerr != nil {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			conn, derr := dialLegacySlowDNSType(ctx, ns, domain, pubkey, res, remoteAddr, mtu, qtypeName, 3*time.Second, protector)
+			if derr != nil {
+				return
+			}
+			_ = conn.Close()
+			ch <- dnsttScanCandidate{
+				resolver: res,
+				qtype:    qtypeName,
+				mtu:      mtu,
+				rttMs:    time.Since(start).Milliseconds(),
+			}
+		}()
+	}
+	wg.Wait()
+	close(ch)
+
+	var out []dnsttScanCandidate
+	for c := range ch {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].rttMs < out[j].rttMs
+	})
+	return out, nil
+}
+
+func dialSlowDNSLegacyParallelBatch(
+	ctx context.Context,
+	ns string,
+	domain dns.Name,
+	pubkey []byte,
+	resolvers []string,
+	mtu int,
+	qtypes []string,
+	perDialTimeout time.Duration,
+	protector SocketProtector,
+) (net.Conn, string, string, error) {
+	type attempt struct {
+		resolver string
+		addr     *net.UDPAddr
+		qtype    string
+	}
+	var attempts []attempt
+	for _, qt := range qtypes {
+		for _, res := range resolvers {
+			rAddr, err := net.ResolveUDPAddr("udp", res)
+			if err != nil {
+				continue
+			}
+			attempts = append(attempts, attempt{resolver: res, addr: rAddr, qtype: qt})
+		}
+	}
+	if len(attempts) == 0 {
+		return nil, "", "", fmt.Errorf("tidak ada DNS resolver valid")
+	}
+
+	batchCtx, batchCancel := context.WithCancel(ctx)
+	defer batchCancel()
+
+	type resItem struct {
+		conn     net.Conn
+		resolver string
+		qtype    string
+		err      error
+	}
+	resCh := make(chan resItem, len(attempts))
+	var wg sync.WaitGroup
+	for _, a := range attempts {
+		a := a
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, err := dialLegacySlowDNSType(batchCtx, ns, domain, pubkey, a.resolver, a.addr, mtu, a.qtype, perDialTimeout, protector)
+			resCh <- resItem{conn: conn, resolver: a.resolver, qtype: a.qtype, err: err}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(resCh)
+	}()
+
+	var lastErr error
+	var winner net.Conn
+	var winRes, winType string
+	for item := range resCh {
+		if item.err == nil && item.conn != nil {
+			if winner == nil {
+				winner = item.conn
+				winRes = item.resolver
+				winType = item.qtype
+				batchCancel()
+			} else {
+				_ = item.conn.Close()
+			}
+		} else if item.err != nil {
+			lastErr = item.err
+		}
+	}
+	if winner != nil {
+		return winner, winRes, winType, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("SlowDNS dnstt gagal")
+	}
+	return nil, "", "", lastErr
+}
+
 func dialSlowDNSLegacy(
 	ctx context.Context,
 	cfg SSHConfig,
@@ -515,12 +718,6 @@ func dialSlowDNSLegacy(
 		return nil, fmt.Errorf("public key tidak valid: %w", err)
 	}
 
-	dnsHost := resolvers[0]
-	remoteAddr, err := net.ResolveUDPAddr("udp", dnsHost)
-	if err != nil {
-		return nil, fmt.Errorf("DNS resolver tidak valid (%s): %w", dnsHost, err)
-	}
-
 	mtu := dnsNameCapacity(domain) - 8 - 1 - numPadding - 1
 	if mtu < 80 {
 		return nil, fmt.Errorf("domain %s terlalu panjang (MTU=%d)", ns, mtu)
@@ -528,24 +725,33 @@ func dialSlowDNSLegacy(
 
 	rawType := strings.ToUpper(strings.TrimSpace(cfg.DNSType))
 	if rawType == "" || rawType == "AUTO" || rawType == "HTTPS" || rawType == "SVCB" || rawType == "AAAA" || rawType == "CAA" || rawType == "SRV" {
-		candidates := []string{"TXT", "NULL", "CNAME", "NS", "A", "MX"}
-		var lastErr error
-		for _, candidate := range candidates {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			conn, dialErr := dialLegacySlowDNSType(ctx, ns, domain, pubkey, dnsHost, remoteAddr, mtu, candidate, 8*time.Second, protector)
-			if dialErr == nil {
-				logMsg("INFO", "SlowDNS terhubung")
-				logMsg("DEBUG", "SlowDNS (dnstt-compat): terhubung via %s (%s)", dnsHost, candidate)
-				return conn, nil
-			}
-			lastErr = dialErr
+		// Fast pass: TXT across all resolvers concurrently (standard dnstt-server default).
+		conn, usedRes, usedType, derr := dialSlowDNSLegacyParallelBatch(ctx, ns, domain, pubkey, resolvers, mtu, []string{"TXT"}, 4*time.Second, protector)
+		if derr == nil {
+			logMsg("INFO", "SlowDNS terhubung")
+			logMsg("DEBUG", "SlowDNS (dnstt): terhubung via %s (%s)", usedRes, usedType)
+			return conn, nil
 		}
-		return nil, fmt.Errorf("SlowDNS gagal di semua tipe: %w", lastErr)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		// Fallback pass across alternative legacy QTYPEs.
+		conn, usedRes, usedType, derr2 := dialSlowDNSLegacyParallelBatch(ctx, ns, domain, pubkey, resolvers, mtu, []string{"NULL", "CNAME", "NS", "A", "MX"}, 5*time.Second, protector)
+		if derr2 == nil {
+			logMsg("INFO", "SlowDNS terhubung")
+			logMsg("DEBUG", "SlowDNS (dnstt): terhubung via %s (%s)", usedRes, usedType)
+			return conn, nil
+		}
+		return nil, fmt.Errorf("SlowDNS gagal di semua resolver & tipe: %w", derr2)
 	}
 
-	return dialLegacySlowDNSType(ctx, ns, domain, pubkey, dnsHost, remoteAddr, mtu, rawType, 12*time.Second, protector)
+	conn, usedRes, usedType, derr := dialSlowDNSLegacyParallelBatch(ctx, ns, domain, pubkey, resolvers, mtu, []string{rawType}, 6*time.Second, protector)
+	if derr != nil {
+		return nil, derr
+	}
+	logMsg("INFO", "SlowDNS terhubung")
+	logMsg("DEBUG", "SlowDNS (dnstt): terhubung via %s (%s)", usedRes, usedType)
+	return conn, nil
 }
 
 func dialLegacySlowDNSType(
