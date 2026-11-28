@@ -66,6 +66,7 @@ import com.vexotun.app.model.VxtPinRequiredException
 import com.vexotun.app.ui.theme.LocalIsDarkTheme
 import com.vexotun.app.ui.theme.StatusConnectedBgDark
 import com.vexotun.app.ui.theme.StatusConnectedFgDark
+import com.vexotun.app.ui.theme.StatusConnectedFgLight
 import com.vexotun.app.vpn.ConnectionStatus
 import kotlinx.coroutines.delay
 
