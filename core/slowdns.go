@@ -806,7 +806,6 @@ func dialLegacySlowDNSType(
 	kcpConn.SetNoDelay(0, 0, 0, 1)
 	kcpConn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
 	kcpConn.SetMtu(mtu)
-	_ = kcpConn.SetDeadline(time.Now().Add(handshakeTimeout))
 
 	handshakeDone := make(chan struct{})
 	go func() {
@@ -868,7 +867,6 @@ func dialLegacySlowDNSType(
 	}
 
 	close(handshakeDone)
-	_ = kcpConn.SetDeadline(time.Time{})
 
 	return &slowDNSConn{
 		Stream:  stream,
