@@ -170,8 +170,15 @@ object TunnelState {
                 }
                 VpnIpc.MSG_LOG_APPENDED -> {
                     val b = msg.data
+                    val remoteId = b.getLong("id", 0L)
+                    val entryId = if (remoteId > 0L) {
+                        nextLogId.accumulateAndGet(remoteId + 1L) { cur, minNext -> maxOf(cur, minNext) }
+                        remoteId
+                    } else {
+                        nextLogId.getAndIncrement()
+                    }
                     val entry = LogEntry(
-                        id = nextLogId.getAndIncrement(),
+                        id = entryId,
                         level = b.getString("level") ?: "INFO",
                         message = b.getString("message") ?: "",
                         timestamp = b.getString("timestamp") ?: currentLogTime()
@@ -419,6 +426,10 @@ object TunnelState {
         }.getOrElse { emptyList() }
 
         val connectedAt = b.getLong("connectedAtElapsedMs", 0L)
+        val maxRemoteId = remoteLogs.maxOfOrNull { it.id } ?: 0L
+        if (maxRemoteId > 0L) {
+            nextLogId.accumulateAndGet(maxRemoteId + 1L) { cur, minNext -> maxOf(cur, minNext) }
+        }
 
         _state.update { current ->
             current.copy(

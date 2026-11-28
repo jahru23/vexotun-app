@@ -42,15 +42,19 @@ import core.Core
 import core.LogHandler
 import core.SocketProtector
 import hev.htproxy.TProxyService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -58,6 +62,7 @@ import java.io.File
 class VexotunVpnService : VpnService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lifecycleMutex = Mutex()
     private val json = Json { ignoreUnknownKeys = true }
 
     private var tunInterface: ParcelFileDescriptor? = null
@@ -203,40 +208,55 @@ class VexotunVpnService : VpnService() {
     private fun reconnectTunnel() {
         val prev = startJob
         startJob = null
-        serviceScope.launch {
-            TunnelState.appendLog("INFO", "Menyambung ulang...")
-            prev?.cancelAndJoin()
-            cleanupResources()
-            if (isStopping) return@launch
-            val config = ConfigStore(this@VexotunVpnService).load()
-            startTunnel(config)
+        prev?.cancel()
+        runCatching { Core.stop() }
+        startJob = serviceScope.launch {
+            lifecycleMutex.withLock {
+                if (isStopping || !isActive) return@withLock
+                TunnelState.appendLog("INFO", "Menyambung ulang...")
+                cleanupResources(cancelReconnect = false)
+                if (isStopping || !isActive) return@withLock
+                val config = ConfigStore(this@VexotunVpnService).load()
+                executeStartTunnel(config)
+            }
         }
     }
 
     private fun startTunnel(config: VexotunConfig) {
-        startJob?.cancel()
+        val prev = startJob
+        startJob = null
+        prev?.cancel()
+        runCatching { Core.stop() }
         startJob = serviceScope.launch {
+            lifecycleMutex.withLock {
+                if (isStopping || !isActive) return@withLock
+                executeStartTunnel(config)
+            }
+        }
+    }
+
+    private suspend fun executeStartTunnel(config: VexotunConfig) {
             val profile = config.activeProfile()
             if (profile == null) {
                 TunnelState.setStatus(ConnectionStatus.ERROR, "Belum ada config yang dipilih")
                 TunnelState.appendLog("ERROR", "Gagal memulai: belum ada config")
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
-                return@launch
+                return
             }
             if (profile.lockInfo?.isExpired() == true) {
                 TunnelState.setStatus(ConnectionStatus.ERROR, "Config .vxt sudah kedaluwarsa")
                 TunnelState.appendLog("ERROR", "Config .vxt sudah kedaluwarsa")
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
-                return@launch
+                return
             }
             validateProfileForStart(profile)?.let { validationMsg ->
                 TunnelState.setStatus(ConnectionStatus.ERROR, validationMsg)
                 TunnelState.appendLog("ERROR", validationMsg)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
-                return@launch
+                return
             }
             try {
                 val protoLabel = if (profile.mode == TunnelMode.XRAY) {
@@ -324,9 +344,10 @@ class VexotunVpnService : VpnService() {
                 TunnelState.appendLog("DEBUG", "Memulai ${profile.mode.label}.")
                 Core.prepare(json.encodeToString(coreConfig), protector, logger)
 
+                currentCoroutineContext().ensureActive()
                 if (isStopping) {
                     runCatching { Core.stop() }
-                    return@launch
+                    return
                 }
 
                 val effectiveMtu = config.mtu.coerceIn(1280, 1500)
@@ -344,6 +365,12 @@ class VexotunVpnService : VpnService() {
                 }
 
                 applySplitTunneling(builder, config)
+
+                currentCoroutineContext().ensureActive()
+                if (isStopping) {
+                    runCatching { Core.stop() }
+                    return
+                }
 
                 val pfd = builder.establish()
                     ?: throw IllegalStateException("Gagal membuat interface VPN")
@@ -368,6 +395,10 @@ class VexotunVpnService : VpnService() {
                     registerNetworkCallback()
                 }
             } catch (t: Throwable) {
+                if (t is CancellationException) {
+                    cleanupResources(cancelReconnect = false)
+                    throw t
+                }
                 val rawErr = t.message.orEmpty()
                 val friendlyErr = friendlyTunnelError(rawErr)
                 if (rawErr.isNotBlank() && rawErr != friendlyErr) {
@@ -379,7 +410,6 @@ class VexotunVpnService : VpnService() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
-        }
     }
 
     private fun applySplitTunneling(builder: Builder, config: VexotunConfig) {
@@ -441,15 +471,21 @@ class VexotunVpnService : VpnService() {
 
     private fun stopTunnel() {
         isStopping = true
-        startJob?.cancel()
+        val prev = startJob
         startJob = null
+        prev?.cancel()
+        runCatching { Core.stop() }
         serviceScope.launch {
-            TunnelState.appendLog("DEBUG", "Memutus koneksi...")
-            cleanupResources()
-            TunnelState.setStatus(ConnectionStatus.DISCONNECTED, "Terputus")
-            TunnelState.appendLog("INFO", "Koneksi terputus.")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            lifecycleMutex.withLock {
+                TunnelState.appendLog("DEBUG", "Memutus koneksi...")
+                cleanupResources()
+                if (isStopping) {
+                    TunnelState.setStatus(ConnectionStatus.DISCONNECTED, "Terputus")
+                    TunnelState.appendLog("INFO", "Koneksi terputus.")
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
         }
     }
 
@@ -671,6 +707,8 @@ class VexotunVpnService : VpnService() {
             return when (profile.mode) {
                 TunnelMode.XRAY -> {
                     val x = profile.xray
+                    val secMode = x.effectiveSecurityMode()
+                    val hasProxy = x.proxyHost.isNotBlank() && x.proxyPort > 0
                     when {
                         x.address.isBlank() -> "Host / Address Xray belum diisi"
                         x.port !in 1..65535 -> "Port Xray tidak valid"
@@ -679,8 +717,16 @@ class VexotunVpnService : VpnService() {
                         } else {
                             "Password Xray belum diisi"
                         }
-                        x.effectiveSecurityMode() == XraySecurityMode.REALITY && x.realityPublicKey.isBlank() ->
+                        secMode == XraySecurityMode.REALITY && x.realityPublicKey.isBlank() ->
                             "Public Key (pbk) Reality belum diisi"
+                        x.useCustomPayload && secMode == XraySecurityMode.REALITY ->
+                            "Custom Payload tidak kompatibel dengan Xray Reality"
+                        x.useCustomPayload && (x.network == XrayTransport.WS || x.network == XrayTransport.HTTPUPGRADE) &&
+                            !hasProxy && x.payload.contains("Upgrade: websocket", ignoreCase = true) ->
+                            "Custom Payload mengirim Upgrade: websocket ganda pada ${x.network.label}. Isi Proxy Host (CONNECT) atau matikan Custom Payload."
+                        x.useCustomPayload && secMode == XraySecurityMode.TLS &&
+                            !hasProxy && !x.payload.contains("CONNECT ", ignoreCase = true) ->
+                            "Custom Payload pada TLS membutuhkan Proxy Host + payload CONNECT (atau gunakan mode Non-TLS)"
                         else -> null
                     }
                 }
@@ -703,12 +749,29 @@ class VexotunVpnService : VpnService() {
         }
 
         fun sanitizeDnsIp(raw: String): String {
-            val clean = raw.trim().substringBefore(':').trim()
-            val ipv4Regex = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
-            if (ipv4Regex.matches(clean)) return clean
-            if (clean.contains(':')) {
-                val bare = raw.trim().removeSurrounding("[", "]")
-                if (bare.isNotBlank() && bare.all { it.isLetterOrDigit() || it == ':' }) return bare
+            val trimmed = raw.trim()
+            if (trimmed.isEmpty()) return "8.8.8.8"
+            val candidate = when {
+                trimmed.startsWith("[") && trimmed.contains("]") ->
+                    trimmed.substringAfter("[").substringBefore("]")
+                trimmed.count { it == ':' } == 1 ->
+                    trimmed.substringBefore(':')
+                else -> trimmed
+            }.trim()
+
+            val ipv4Parts = candidate.split('.')
+            if (ipv4Parts.size == 4 && ipv4Parts.all { part ->
+                    part.isNotEmpty() && part.length <= 3 && part.all(Char::isDigit) && (part.toIntOrNull() ?: 999) in 0..255
+                }
+            ) {
+                return candidate
+            }
+
+            if (candidate.count { it == ':' } >= 2 && candidate.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' || it == ':' }) {
+                val parsed = runCatching { java.net.InetAddress.getByName(candidate) }.getOrNull()
+                if (parsed is java.net.Inet6Address) {
+                    return parsed.hostAddress ?: candidate
+                }
             }
             return "8.8.8.8"
         }

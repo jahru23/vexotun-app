@@ -130,6 +130,9 @@ func Prepare(configJSON string, protector SocketProtector, logger LogHandler) er
 	case "xray":
 		xrayJSON := cfg.XrayConfigJSON
 		if cfg.XrayPayload.Enabled {
+			if err := validateXrayPayloadCompatibility(xrayJSON, cfg.XrayPayload); err != nil {
+				return err
+			}
 			bridge, err := startXrayPayloadBridge(startCtx, cfg.XrayPayload, protector)
 			if err != nil {
 				return err
@@ -490,7 +493,17 @@ func verifyXraySocks(ctx context.Context, socksPort int, targetURL string, timeo
 			}
 			ch := make(chan dialRes, 1)
 			go func() {
-				c, derr := dialViaSocks5Addr(socksAddr, addr)
+				dialTimeout := timeout
+				if dl, ok := dctx.Deadline(); ok {
+					rem := time.Until(dl)
+					if rem <= 0 {
+						rem = 250 * time.Millisecond
+					}
+					if rem < dialTimeout {
+						dialTimeout = rem
+					}
+				}
+				c, derr := dialViaSocks5AddrWithTimeout(socksAddr, addr, dialTimeout)
 				ch <- dialRes{c: c, err: derr}
 			}()
 			select {
@@ -523,6 +536,9 @@ func verifyXraySocks(ctx context.Context, socksPort int, targetURL string, timeo
 		return -1, err
 	}
 	_ = resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return -1, fmt.Errorf("probe HTTP status %d", resp.StatusCode)
+	}
 	elapsed := time.Since(start).Milliseconds()
 	if elapsed <= 0 {
 		elapsed = 1

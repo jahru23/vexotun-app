@@ -46,6 +46,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -130,13 +131,14 @@ fun MainScreen(
     var exportVxtProfile by remember { mutableStateOf<TunnelProfile?>(null) }
     var qrExportData by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pendingVxtBytes by remember { mutableStateOf<ByteArray?>(null) }
-    var pendingPinUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingPinUriStr by rememberSaveable { mutableStateOf<String?>(null) }
+    val pendingPinUri = pendingPinUriStr?.let(Uri::parse)
     var pendingPinText by remember { mutableStateOf<String?>(null) }
     val externalPinUri by viewModel.pendingExternalPinUri.collectAsStateWithLifecycle()
     LaunchedEffect(externalPinUri) {
         val ext = externalPinUri
         if (ext != null) {
-            pendingPinUri = ext
+            pendingPinUriStr = ext.toString()
             viewModel.clearPendingExternalPinUri()
         }
     }
@@ -170,7 +172,8 @@ fun MainScreen(
                     Toast.makeText(context, "Config .vxt diimpor: $name", Toast.LENGTH_SHORT).show()
                 }.onFailure { err ->
                     if (err is VxtPinRequiredException) {
-                        pendingPinUri = uri
+                        showImportDialog = false
+                        pendingPinUriStr = uri.toString()
                     } else {
                         Toast.makeText(context, err.message ?: "Gagal impor .vxt", Toast.LENGTH_LONG).show()
                     }
@@ -229,7 +232,7 @@ fun MainScreen(
     if (pendingPinUri != null || pendingPinText != null) {
         VxtPinPromptDialog(
             onDismiss = {
-                pendingPinUri = null
+                pendingPinUriStr = null
                 pendingPinText = null
             },
             onConfirm = { enteredPin ->
@@ -238,7 +241,7 @@ fun MainScreen(
                 if (uri != null) {
                     viewModel.importVxtUri(uri, enteredPin) { result ->
                         result.onSuccess { name ->
-                            pendingPinUri = null
+                            pendingPinUriStr = null
                             showImportDialog = false
                             Toast.makeText(context, "Config .vxt diimpor: $name", Toast.LENGTH_SHORT).show()
                         }.onFailure { err ->
@@ -248,6 +251,7 @@ fun MainScreen(
                 } else if (text != null) {
                     viewModel.importFromLinks(text, enteredPin).onSuccess {
                         pendingPinText = null
+                        showImportDialog = false
                         Toast.makeText(context, "Config .vxt berhasil diimpor", Toast.LENGTH_SHORT).show()
                     }.onFailure { err ->
                         Toast.makeText(context, err.message ?: "PIN salah", Toast.LENGTH_LONG).show()
@@ -360,7 +364,7 @@ fun MainScreen(
                 actions = {
                     if (runtime.status == ConnectionStatus.CONNECTED || runtime.status == ConnectionStatus.ERROR) {
                         val dotColor = if (runtime.status == ConnectionStatus.CONNECTED) {
-                            StatusConnectedFgDark
+                            if (isDark) StatusConnectedFgDark else StatusConnectedFgLight
                         } else {
                             MaterialTheme.colorScheme.error
                         }

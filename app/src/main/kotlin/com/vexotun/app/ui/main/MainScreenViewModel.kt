@@ -269,6 +269,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     fun selectProfile(profileId: String) {
         if (isTunnelBusy()) return
+        _dnsScanState.value = SlowDnsScanState()
         updateConfig { it.copy(activeProfileId = profileId) }
     }
 
@@ -290,6 +291,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun createProfile(mode: TunnelMode): String {
+        _dnsScanState.value = SlowDnsScanState()
         val count = _config.value.profiles.count { it.mode == mode } + 1
         val newProfile = TunnelProfile(
             name = "${mode.label} #$count",

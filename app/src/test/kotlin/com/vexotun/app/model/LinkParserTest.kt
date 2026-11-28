@@ -124,4 +124,17 @@ class LinkParserTest {
         assertEquals(reality.xray.realitySpiderX, parsed.xray.realitySpiderX)
         assertEquals(reality.xray.flow, parsed.xray.flow)
     }
+
+    @Test
+    fun parseTrojanWithEmptySecurityAndShadowsocksPasswordWithAtSign() {
+        val trojan = LinkParser.parseShareLink("trojan://secret@node.example.com:443?security=#TrojanEmptySec").getOrThrow()
+        assertEquals(XraySecurityMode.TLS, trojan.xray.effectiveSecurityMode())
+        assertTrue(trojan.xray.tls)
+
+        val ss = LinkParser.parseShareLink("ss://aes-256-gcm:p@ssword!@198.51.100.77:8388#SSAt").getOrThrow()
+        assertEquals("aes-256-gcm", ss.xray.security)
+        assertEquals("p@ssword!", ss.xray.id)
+        assertEquals("198.51.100.77", ss.xray.address)
+        assertEquals(8388, ss.xray.port)
+    }
 }

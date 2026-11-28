@@ -281,13 +281,12 @@ func dialSSHWebSocket(ctx context.Context, cfg SSHConfig, protector SocketProtec
 			baseConn = tlsConn
 		}
 		payload := cfg.Payload
-		if strings.TrimSpace(payload) == "" || strings.HasPrefix(strings.TrimSpace(payload), "GET / HTTP/1.1[crlf]Host: [host]") && path != "/" {
-			if strings.TrimSpace(payload) == "" || wsHost != cfg.Host || path != "/" {
-				payload = fmt.Sprintf(
-					"GET %s HTTP/1.1[crlf]Host: %s[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: [ua][crlf][crlf]",
-					path, wsHost,
-				)
-			}
+		trimmedPayload := strings.TrimSpace(payload)
+		if trimmedPayload == "" || (strings.HasPrefix(trimmedPayload, "GET / HTTP/1.1[crlf]Host: [host]") && (wsHost != cfg.Host || path != "/")) {
+			payload = fmt.Sprintf(
+				"GET %s HTTP/1.1[crlf]Host: %s[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: [ua][crlf][crlf]",
+				path, wsHost,
+			)
 		}
 		wrapped, err := injectHTTPPayload(baseConn, payload, cfg.Host, cfg.Port, wsHost)
 		if err != nil {
@@ -323,9 +322,11 @@ func dialSSHWebSocket(ctx context.Context, cfg SSHConfig, protector SocketProtec
 	}
 	if ctx.Err() == nil && (errors.Is(err, websocket.ErrBadHandshake) || (resp != nil && resp.StatusCode == http.StatusSwitchingProtocols)) {
 		logMsg("DEBUG", "Server WS bukan RFC 6455 (%v), beralih ke Raw HTTP 101 Upgrade...", err)
-		if rawConn, rawErr := dialRawWS(); rawErr == nil {
+		rawConn, rawErr := dialRawWS()
+		if rawErr == nil {
 			return rawConn, nil
 		}
+		return nil, fmt.Errorf("WS dial failed (%v); raw 101 fallback failed: %w", err, rawErr)
 	}
 	if resp != nil {
 		return nil, fmt.Errorf("WS dial failed (%s): %w", resp.Status, err)
@@ -674,7 +675,7 @@ func (e *sshEngine) handleSocks5UDPAssociate(clientConn net.Conn) {
 			continue
 		}
 		if udpgw != nil {
-			udpgw.Forward(srcAddr, hdrCopy, dstHost, dstPort, payloadCopy)
+			go udpgw.Forward(srcAddr, hdrCopy, dstHost, dstPort, payloadCopy)
 		}
 	}
 }
@@ -807,7 +808,48 @@ func (r *sshUDPGWRelay) readLoop(c net.Conn) {
 	}
 }
 
+func (r *sshUDPGWRelay) allocSession(src *net.UDPAddr, hdr []byte, dstHost string, dstPort uint16) (uint16, bool) {
+	key := fmt.Sprintf("%s|%s:%d", src.String(), dstHost, dstPort)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return 0, false
+	}
+	connID, ok := r.sessions[key]
+	if !ok {
+		if len(r.sessions) >= 128 {
+			cutoff := time.Now().Add(-30 * time.Second)
+			for k, id := range r.sessions {
+				if ep, exists := r.reverse[id]; !exists || ep.lastUse.Before(cutoff) {
+					delete(r.sessions, k)
+					delete(r.reverse, id)
+				}
+			}
+		}
+		for i := 0; i < 65535; i++ {
+			r.nextID++
+			if r.nextID == 0 {
+				r.nextID = 1
+			}
+			if _, used := r.reverse[r.nextID]; !used {
+				connID = r.nextID
+				break
+			}
+		}
+		if connID == 0 {
+			return 0, false
+		}
+		r.sessions[key] = connID
+	}
+	r.reverse[connID] = udpgwEndpoint{src: src, hdr: hdr, lastUse: time.Now()}
+	return connID, true
+}
+
 func (r *sshUDPGWRelay) Forward(src *net.UDPAddr, hdr []byte, dstHost string, dstPort uint16, payload []byte) {
+	bodyLen := 3 + 4 + 2 + len(payload)
+	if bodyLen > 8192 {
+		return
+	}
 	ip := net.ParseIP(dstHost)
 	if ip == nil {
 		return
@@ -821,30 +863,11 @@ func (r *sshUDPGWRelay) Forward(src *net.UDPAddr, hdr []byte, dstHost string, ds
 		return
 	}
 
-	key := src.String()
-	r.mu.Lock()
-	connID, ok := r.sessions[key]
+	connID, ok := r.allocSession(src, hdr, dstHost, dstPort)
 	if !ok {
-		if len(r.sessions) >= 128 {
-			cutoff := time.Now().Add(-30 * time.Second)
-			for k, id := range r.sessions {
-				if ep, exists := r.reverse[id]; !exists || ep.lastUse.Before(cutoff) {
-					delete(r.sessions, k)
-					delete(r.reverse, id)
-				}
-			}
-		}
-		r.nextID++
-		if r.nextID == 0 {
-			r.nextID = 1
-		}
-		connID = r.nextID
-		r.sessions[key] = connID
+		return
 	}
-	r.reverse[connID] = udpgwEndpoint{src: src, hdr: hdr, lastUse: time.Now()}
-	r.mu.Unlock()
 
-	bodyLen := 3 + 4 + 2 + len(payload)
 	pkt := make([]byte, 2+bodyLen)
 	binary.LittleEndian.PutUint16(pkt[0:2], uint16(bodyLen))
 	pkt[2] = 0x00

@@ -312,7 +312,26 @@ internal fun XrayProfileEditor(
             selectedLabel = x.protocol.label,
             options = XrayProtocol.entries,
             optionLabel = { it.label },
-            onSelect = { proto -> onUpdateProfile { it.copy(xray = it.xray.copy(protocol = proto)) } }
+            onSelect = { proto ->
+                onUpdateProfile { cur ->
+                    val cx = cur.xray
+                    val nextSec = if (proto != XrayProtocol.VLESS && cx.effectiveSecurityMode() == XraySecurityMode.REALITY) {
+                        XraySecurityMode.TLS
+                    } else {
+                        cx.securityMode
+                    }
+                    val nextTls = if (nextSec != null) nextSec == XraySecurityMode.TLS else cx.tls
+                    val nextFlow = if (proto != XrayProtocol.VLESS) "" else cx.flow
+                    cur.copy(
+                        xray = cx.copy(
+                            protocol = proto,
+                            securityMode = nextSec,
+                            tls = nextTls,
+                            flow = nextFlow
+                        )
+                    )
+                }
+            }
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
@@ -554,6 +573,32 @@ internal fun XrayProfileEditor(
         )
 
         if (x.useCustomPayload) {
+            val hasProxy = x.proxyHost.isNotBlank() && x.proxyPort > 0
+            val compatWarning = when {
+                secMode == XraySecurityMode.REALITY ->
+                    "Custom Payload tidak kompatibel dengan Xray Reality."
+                (x.network == XrayTransport.WS || x.network == XrayTransport.HTTPUPGRADE) &&
+                    !hasProxy && x.payload.contains("Upgrade: websocket", ignoreCase = true) ->
+                    "Transport ${x.network.label} sudah mengirim HTTP Upgrade sendiri. Isi Proxy Host (CONNECT) atau hapus header Upgrade."
+                secMode == XraySecurityMode.TLS &&
+                    !hasProxy && !x.payload.contains("CONNECT ", ignoreCase = true) ->
+                    "Custom Payload pada mode TLS membutuhkan Proxy Host + payload CONNECT (atau gunakan Non-TLS)."
+                else -> null
+            }
+            if (compatWarning != null) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f))
+                ) {
+                    Text(
+                        compatWarning,
+                        modifier = Modifier.padding(10.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = x.proxyHost,

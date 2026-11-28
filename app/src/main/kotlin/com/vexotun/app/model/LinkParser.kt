@@ -150,7 +150,7 @@ object LinkParser {
 
         val net = mapTransport(query["type"] ?: "tcp")
         val defaultSecurity = if (protocol == XrayProtocol.TROJAN) "tls" else "none"
-        val security = (query["security"] ?: defaultSecurity).lowercase()
+        val security = query["security"].orEmpty().ifBlank { defaultSecurity }.lowercase()
         val secMode = when (security) {
             "reality" -> XraySecurityMode.REALITY
             "tls", "xtls" -> XraySecurityMode.TLS
@@ -215,15 +215,16 @@ object LinkParser {
         val queryPart = mainPart.substringBefore('?')
 
         val decodedPart = if ('@' in queryPart) {
-            val userEnc = queryPart.substringBefore('@')
-            val hostPort = queryPart.substringAfter('@')
+            val splitAt = queryPart.lastIndexOf('@')
+            val userEnc = queryPart.substring(0, splitAt)
+            val hostPort = queryPart.substring(splitAt + 1)
             val creds = if (':' in userEnc) userEnc else decodeBase64Flexible(userEnc)
             "$creds@$hostPort"
         } else {
             decodeBase64Flexible(queryPart)
         }
 
-        val atIdx = decodedPart.indexOf('@')
+        val atIdx = decodedPart.lastIndexOf('@')
         require(atIdx > 0) { "Format Shadowsocks tidak valid" }
         val creds = decodedPart.substring(0, atIdx)
         val hostPort = decodedPart.substring(atIdx + 1)

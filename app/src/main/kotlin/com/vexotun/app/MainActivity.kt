@@ -48,7 +48,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        handleIncomingUri(intent?.data)
+        if (savedInstanceState == null) {
+            handleIncomingUri(intent?.data)
+        }
         setContent {
             val config by viewModel.config.collectAsStateWithLifecycle()
             VexotunTheme(darkTheme = config.darkTheme) {
@@ -90,6 +92,7 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIncomingUri(uri: Uri?) {
         if (uri == null) return
+        intent?.data = null
         viewModel.importVxtUri(uri) { result ->
             result.onSuccess { name ->
                 Toast.makeText(this, "Config .vxt diimpor: $name", Toast.LENGTH_LONG).show()

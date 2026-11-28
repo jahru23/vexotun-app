@@ -1,8 +1,10 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -336,4 +338,105 @@ func TestPrepareStopConcurrencyNoRace(t *testing.T) {
 		t.Fatalf("Prepare after Stop failed: %v", err)
 	}
 	Stop()
+}
+
+func TestVerifyXraySocksRejectsHttp4xx5xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	// Spin up minimal local SOCKS5 server forwarding to requested target
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen socks: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		for {
+			c, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			go func(cn net.Conn) {
+				defer cn.Close()
+				var buf [262]byte
+				if _, err := io.ReadFull(cn, buf[:2]); err != nil {
+					return
+				}
+				nMethods := int(buf[1])
+				if nMethods > 0 {
+					_, _ = io.ReadFull(cn, buf[:nMethods])
+				}
+				_, _ = cn.Write([]byte{0x05, 0x00})
+				if _, err := io.ReadFull(cn, buf[:4]); err != nil {
+					return
+				}
+				var addr string
+				switch buf[3] {
+				case 0x01:
+					_, _ = io.ReadFull(cn, buf[:6])
+					port := int(buf[4])<<8 | int(buf[5])
+					addr = fmt.Sprintf("%d.%d.%d.%d:%d", buf[0], buf[1], buf[2], buf[3], port)
+				case 0x03:
+					_, _ = io.ReadFull(cn, buf[:1])
+					dlen := int(buf[0])
+					_, _ = io.ReadFull(cn, buf[:dlen+2])
+					port := int(buf[dlen])<<8 | int(buf[dlen+1])
+					addr = fmt.Sprintf("%s:%d", string(buf[:dlen]), port)
+				default:
+					return
+				}
+				up, derr := net.DialTimeout("tcp", addr, 2*time.Second)
+				if derr != nil {
+					_, _ = cn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+					return
+				}
+				defer up.Close()
+				_, _ = cn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+				go func() { _, _ = io.Copy(up, cn) }()
+				_, _ = io.Copy(cn, up)
+			}(c)
+		}
+	}()
+
+	socksPort := ln.Addr().(*net.TCPAddr).Port
+	_, verr := verifyXraySocks(context.Background(), socksPort, srv.URL+"/generate_204", 3*time.Second)
+	if verr == nil {
+		t.Fatalf("expected verifyXraySocks to reject HTTP 502 Bad Gateway response")
+	}
+}
+
+func TestValidateXrayPayloadCompatibility(t *testing.T) {
+	realityJSON := `{"outbounds":[{"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"1.2.3.4","port":443,"users":[{"id":"1111"}]}]},"streamSettings":{"network":"tcp","security":"reality"}}]}`
+	if err := validateXrayPayloadCompatibility(realityJSON, XrayPayloadConfig{Enabled: true, Payload: "CONNECT [host_port] HTTP/1.1[crlf][crlf]"}); err == nil {
+		t.Fatalf("expected error when custom payload is enabled on Reality profile")
+	}
+
+	wsDoubleUpgradeJSON := `{"outbounds":[{"tag":"proxy","protocol":"vmess","settings":{"vnext":[{"address":"1.2.3.4","port":80,"users":[{"id":"1111"}]}]},"streamSettings":{"network":"ws","security":"none"}}]}`
+	if err := validateXrayPayloadCompatibility(wsDoubleUpgradeJSON, XrayPayloadConfig{
+		Enabled: true,
+		Payload: "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]",
+	}); err == nil {
+		t.Fatalf("expected error preventing double HTTP Upgrade: websocket without ProxyHost")
+	}
+
+	tlsNoProxyJSON := `{"outbounds":[{"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"1.2.3.4","port":443,"users":[{"id":"1111"}]}]},"streamSettings":{"network":"tcp","security":"tls"}}]}`
+	if err := validateXrayPayloadCompatibility(tlsNoProxyJSON, XrayPayloadConfig{
+		Enabled: true,
+		Payload: "GET / HTTP/1.1[crlf]Host: [host][crlf][crlf]",
+	}); err == nil {
+		t.Fatalf("expected error for non-CONNECT custom payload on TLS without ProxyHost")
+	}
+
+	// Valid HTTP CONNECT proxy tunnel carrying Xray WS/TLS must succeed
+	if err := validateXrayPayloadCompatibility(wsDoubleUpgradeJSON, XrayPayloadConfig{
+		Enabled:   true,
+		ProxyHost: "10.0.0.1",
+		ProxyPort: 8080,
+		Payload:   "CONNECT [host_port] [protocol][crlf][crlf]",
+	}); err != nil {
+		t.Fatalf("expected valid CONNECT proxy payload on Xray WS to pass, got: %v", err)
+	}
 }

@@ -146,6 +146,51 @@ func (b *xrayPayloadBridge) handleConn(localConn net.Conn) {
 	pipeWg.Wait()
 }
 
+// validateXrayPayloadCompatibility rejects known-broken combinations where custom HTTP
+// injection would collide with Reality, double-upgrade Xray WebSocket/HTTPUpgrade, or
+// inject plaintext HTTP before a direct TLS ClientHello without an HTTP CONNECT proxy.
+func validateXrayPayloadCompatibility(rawJSON string, cfg XrayPayloadConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	var root map[string]any
+	if err := json.Unmarshal([]byte(rawJSON), &root); err != nil {
+		return err
+	}
+	outbounds, _ := root["outbounds"].([]any)
+	for _, item := range outbounds {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if tag, _ := m["tag"].(string); tag != "proxy" {
+			continue
+		}
+		ss, _ := m["streamSettings"].(map[string]any)
+		if ss == nil {
+			break
+		}
+		netName, _ := ss["network"].(string)
+		security, _ := ss["security"].(string)
+		hasProxy := strings.TrimSpace(cfg.ProxyHost) != "" && cfg.ProxyPort > 0
+		payloadLower := strings.ToLower(cfg.Payload)
+
+		if strings.EqualFold(security, "reality") {
+			return fmt.Errorf("custom payload tidak kompatibel dengan Xray Reality")
+		}
+		if (strings.EqualFold(netName, "ws") || strings.EqualFold(netName, "httpupgrade")) &&
+			!hasProxy && strings.Contains(payloadLower, "upgrade: websocket") {
+			return fmt.Errorf("custom payload mengirim 'Upgrade: websocket' ganda pada transport %s; isi Proxy Host (CONNECT) atau matikan Custom Payload", strings.ToUpper(netName))
+		}
+		if (strings.EqualFold(security, "tls") || strings.EqualFold(security, "xtls")) &&
+			!hasProxy && !strings.Contains(payloadLower, "connect ") {
+			return fmt.Errorf("custom payload pada Xray TLS membutuhkan Proxy Host + payload CONNECT (atau gunakan mode Non-TLS)")
+		}
+		break
+	}
+	return nil
+}
+
 // rewriteXrayOutboundEndpoint redirects the primary "proxy" outbound to 127.0.0.1:<bridgePort>
 // while preserving Host/SNI headers inside streamSettings.
 func rewriteXrayOutboundEndpoint(rawJSON string, bridgePort int) (string, error) {
@@ -162,11 +207,6 @@ func rewriteXrayOutboundEndpoint(rawJSON string, bridgePort int) (string, error)
 		tag, _ := m["tag"].(string)
 		if tag != "proxy" {
 			continue
-		}
-		if ss, ok := m["streamSettings"].(map[string]any); ok {
-			if netName, _ := ss["network"].(string); strings.EqualFold(netName, "ws") {
-				logMsg("WARN", "Custom payload aktif pada Xray WebSocket: pastikan payload tidak mengirim 'Upgrade: websocket' ganda")
-			}
 		}
 		settings, ok := m["settings"].(map[string]any)
 		if !ok {
