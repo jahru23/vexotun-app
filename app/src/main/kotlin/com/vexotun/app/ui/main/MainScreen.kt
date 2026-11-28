@@ -1,18 +1,7 @@
 package com.vexotun.app.ui.main
 
 import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.ContentValues
-import android.content.Context
-import android.content.Intent
-import android.graphics.Bitmap
 import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.os.PowerManager
-import android.provider.MediaStore
-import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -23,167 +12,68 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.ContentPaste
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.NetworkPing
 import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.Public
-import androidx.compose.material.icons.filled.QrCode2
-import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.VpnKey
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationDrawerItem
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.SuggestionChip
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.vexotun.app.model.CoreSshPayload
 import com.vexotun.app.model.LinkExporter
-import com.vexotun.app.model.SlowDnsRecordType
-import com.vexotun.app.model.SplitTunnelMode
-import com.vexotun.app.model.SshProfile
-import com.vexotun.app.model.SshTransport
-import com.vexotun.app.model.TunnelMode
 import com.vexotun.app.model.TunnelProfile
-import com.vexotun.app.model.VexotunConfig
-import com.vexotun.app.model.VxtLockInfo
 import com.vexotun.app.model.VxtPinRequiredException
-import com.vexotun.app.model.XrayProtocol
-import com.vexotun.app.model.XrayTransport
+import com.vexotun.app.ui.theme.LocalIsDarkTheme
+import com.vexotun.app.ui.theme.StatusConnectedBgDark
+import com.vexotun.app.ui.theme.StatusConnectedFgDark
 import com.vexotun.app.vpn.ConnectionStatus
-import com.vexotun.app.vpn.TrafficStatsState
-import com.vexotun.app.vpn.TunnelState
-import com.vexotun.app.vpn.VexotunVpnService
-import com.vexotun.app.vpn.VpnRuntimeState
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.EncodeHintType
-import com.google.zxing.qrcode.QRCodeWriter
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import java.net.Inet4Address
-import java.net.NetworkInterface
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 private enum class AppPage(val title: String, val icon: ImageVector) {
     TUNNEL("Tunnel", Icons.Default.PowerSettingsNew),
     CONFIG("Config", Icons.Default.Key),
-    TOOLS("Tools Jaringan", Icons.Default.Build),
-    APPS("Filter Aplikasi", Icons.Default.Apps),
-    SETTINGS("Pengaturan", Icons.Default.Tune)
+    TOOLS("Tools", Icons.Default.Build),
+    SETTINGS("Setelan", Icons.Default.Tune),
+    APPS("Filter Aplikasi", Icons.Default.Tune)
 }
 
 private data class NavEntry(
@@ -198,19 +88,27 @@ fun MainScreen(
     viewModel: MainScreenViewModel = viewModel()
 ) {
     val context = LocalContext.current
+    val isDark = LocalIsDarkTheme.current
     val config by viewModel.config.collectAsStateWithLifecycle()
     val runtime by viewModel.runtimeState.collectAsStateWithLifecycle()
     val apps by viewModel.apps.collectAsStateWithLifecycle()
     val isPinging by viewModel.isPinging.collectAsStateWithLifecycle()
     val isBatchPinging by viewModel.isBatchPinging.collectAsStateWithLifecycle()
     val pingResults by viewModel.pingResults.collectAsStateWithLifecycle()
+    val dnsScanState by viewModel.dnsScanState.collectAsStateWithLifecycle()
 
     val navStack = remember { mutableStateListOf(NavEntry(AppPage.TUNNEL)) }
     val currentNav = navStack.lastOrNull() ?: NavEntry(AppPage.TUNNEL)
     val currentPage = currentNav.page
     val editingProfileId = currentNav.editingProfileId
+    val isTopLevel = currentPage != AppPage.APPS && editingProfileId == null
 
-    fun navigateTo(page: AppPage, editId: String? = null) {
+    fun navigateTopTab(page: AppPage) {
+        navStack.clear()
+        navStack.add(NavEntry(page, null))
+    }
+
+    fun navigateSubPage(page: AppPage, editId: String? = null) {
         val target = NavEntry(page, editId)
         if (navStack.lastOrNull() != target) {
             navStack.add(target)
@@ -220,6 +118,9 @@ fun MainScreen(
     fun navigateBack() {
         if (navStack.size > 1) {
             navStack.removeAt(navStack.lastIndex)
+        } else if (!isTopLevel) {
+            navStack.clear()
+            navStack.add(NavEntry(AppPage.TUNNEL))
         }
     }
 
@@ -241,9 +142,6 @@ fun MainScreen(
     }
     var lastBackPressMs by remember { mutableLongStateOf(0L) }
     val isTunnelBusy = runtime.status == ConnectionStatus.CONNECTED || runtime.status == ConnectionStatus.CONNECTING
-
-    val drawerState = rememberDrawerState(DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
 
     val vxtExportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
@@ -283,8 +181,8 @@ fun MainScreen(
 
     BackHandler(enabled = true) {
         when {
-            drawerState.isOpen -> scope.launch { drawerState.close() }
             navStack.size > 1 -> navigateBack()
+            currentPage != AppPage.TUNNEL -> navigateTopTab(AppPage.TUNNEL)
             else -> {
                 val now = System.currentTimeMillis()
                 if (now - lastBackPressMs < 2000L) {
@@ -303,7 +201,7 @@ fun MainScreen(
     LaunchedEffect(runtime.status) {
         if (runtime.status == ConnectionStatus.CONNECTED && lastStatus != ConnectionStatus.CONNECTED) {
             showConnectedBanner = true
-            delay(3000L)
+            delay(2500L)
             showConnectedBanner = false
         } else if (runtime.status != ConnectionStatus.CONNECTED) {
             showConnectedBanner = false
@@ -365,7 +263,7 @@ fun MainScreen(
             onSelectMode = { mode ->
                 showCreateTypeDialog = false
                 val newId = viewModel.createProfile(mode)
-                navigateTo(AppPage.CONFIG, newId)
+                navigateSubPage(AppPage.CONFIG, newId)
             }
         )
     }
@@ -408,283 +306,222 @@ fun MainScreen(
         )
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            ModalDrawerSheet(
-                modifier = Modifier.width(280.dp),
-                drawerContainerColor = MaterialTheme.colorScheme.surfaceVariant
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 22.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = Color(0xFF081620),
-                        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.size(38.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                "V",
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 18.sp
-                            )
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background
+                ),
+                navigationIcon = {
+                    if (!isTopLevel) {
+                        IconButton(onClick = { navigateBack() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Kembali")
                         }
                     }
-                    Column {
+                },
+                title = {
+                    val titleText = when {
+                        currentPage == AppPage.TUNNEL -> "Vexotun"
+                        currentPage == AppPage.CONFIG && editingProfileId != null -> {
+                            val editMode = config.profiles.firstOrNull { it.id == editingProfileId }?.mode?.label
+                            if (editMode != null) "Edit $editMode" else "Edit Config"
+                        }
+                        else -> currentPage.title
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (currentPage == AppPage.TUNNEL) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xFF111214),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        "V",
+                                        color = if (isDark) MaterialTheme.colorScheme.primary else Color(0xFFF59E0B),
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                            }
+                        }
                         Text(
-                            "Vexotun",
-                            style = MaterialTheme.typography.titleLarge,
+                            titleText,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                        Text(
-                            "Xray & SSH Tunnel",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                },
+                actions = {
+                    if (runtime.status == ConnectionStatus.CONNECTED || runtime.status == ConnectionStatus.ERROR) {
+                        val dotColor = if (runtime.status == ConnectionStatus.CONNECTED) {
+                            StatusConnectedFgDark
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        }
+                        Box(
+                            modifier = Modifier
+                                .padding(end = 16.dp)
+                                .size(9.dp)
+                                .clip(CircleShape)
+                                .background(dotColor)
                         )
                     }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Spacer(Modifier.height(8.dp))
-
-                listOf(AppPage.TOOLS, AppPage.APPS, AppPage.SETTINGS).forEach { page ->
-                    NavigationDrawerItem(
-                        icon = { Icon(page.icon, contentDescription = null) },
-                        label = { Text(page.title) },
-                        selected = currentPage == page,
-                        onClick = {
-                            navigateTo(page, null)
-                            scope.launch { drawerState.close() }
-                        },
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
-                    )
+            )
+        },
+        bottomBar = {
+            if (isTopLevel) {
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    tonalElevation = 0.dp
+                ) {
+                    listOf(AppPage.TUNNEL, AppPage.CONFIG, AppPage.TOOLS, AppPage.SETTINGS).forEach { tab ->
+                        NavigationBarItem(
+                            selected = currentPage == tab,
+                            onClick = { navigateTopTab(tab) },
+                            icon = { Icon(tab.icon, contentDescription = tab.title) },
+                            label = { Text(tab.title, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        )
+                    }
                 }
             }
         }
-    ) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background
-                    ),
-                    navigationIcon = {
-                        if (navStack.size > 1) {
-                            IconButton(onClick = { navigateBack() }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Kembali")
-                            }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            when (currentPage) {
+                AppPage.TUNNEL -> TunnelPage(
+                    config = config,
+                    runtime = runtime,
+                    trafficStateFlow = viewModel.trafficState,
+                    isPinging = isPinging,
+                    onSelectProfile = { id ->
+                        if (isTunnelBusy && id != config.activeProfile()?.id) {
+                            Toast.makeText(
+                                context,
+                                "Putus VPN terlebih dahulu untuk mengganti profil aktif",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         } else {
-                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                                Icon(Icons.Default.Menu, contentDescription = "Menu")
-                            }
+                            viewModel.selectProfile(id)
                         }
                     },
-                    title = {
-                        val titleText = when {
-                            currentPage == AppPage.TUNNEL -> "Vexotun"
-                            currentPage == AppPage.CONFIG && editingProfileId != null -> {
-                                val editMode = config.profiles.firstOrNull { it.id == editingProfileId }?.mode?.label
-                                if (editMode != null) "Edit $editMode" else "Edit Config"
-                            }
-                            else -> currentPage.title
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            if (currentPage == AppPage.TUNNEL) {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = Color(0xFF081620),
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text(
-                                            "V",
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 13.sp
-                                        )
-                                    }
-                                }
-                            }
-                            Text(
-                                titleText,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    },
-                    actions = {
-                        if (runtime.status == ConnectionStatus.CONNECTED || runtime.status == ConnectionStatus.ERROR) {
-                            val dotColor = if (runtime.status == ConnectionStatus.CONNECTED) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.error
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .padding(end = 16.dp)
-                                    .size(9.dp)
-                                    .clip(CircleShape)
-                                    .background(dotColor)
-                            )
-                        }
-                    }
+                    onGoToConfig = { navigateTopTab(AppPage.CONFIG) },
+                    onOpenImport = { showImportDialog = true },
+                    onStartClick = onRequestVpnStart,
+                    onStopClick = viewModel::stopVpn,
+                    onPingClick = viewModel::runPingCheck,
+                    onClearLogs = viewModel::clearLogs
                 )
-            },
-            bottomBar = {
-                if (currentPage == AppPage.TUNNEL || (currentPage == AppPage.CONFIG && editingProfileId == null)) {
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        tonalElevation = 0.dp
-                    ) {
-                        NavigationBarItem(
-                            selected = currentPage == AppPage.TUNNEL,
-                            onClick = { navigateTo(AppPage.TUNNEL, null) },
-                            icon = { Icon(Icons.Default.PowerSettingsNew, contentDescription = "Tunnel") },
-                            label = { Text("Tunnel") }
-                        )
-                        NavigationBarItem(
-                            selected = currentPage == AppPage.CONFIG,
-                            onClick = { navigateTo(AppPage.CONFIG, null) },
-                            icon = { Icon(Icons.Default.Key, contentDescription = "Config") },
-                            label = { Text("Config") }
-                        )
+
+                AppPage.CONFIG -> {
+                    val editTarget = editingProfileId?.let { id ->
+                        config.profiles.firstOrNull { it.id == id }
                     }
-                }
-            }
-        ) { innerPadding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            ) {
-                when (currentPage) {
-                    AppPage.TUNNEL -> TunnelPage(
-                        config = config,
-                        runtime = runtime,
-                        trafficStateFlow = viewModel.trafficState,
-                        isPinging = isPinging,
-                        onSelectProfile = { id ->
-                            if (isTunnelBusy && id != config.activeProfile()?.id) {
-                                Toast.makeText(
-                                    context,
-                                    "Putus VPN terlebih dahulu untuk mengganti profil aktif",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            } else {
-                                viewModel.selectProfile(id)
-                            }
-                        },
-                        onGoToConfig = { navigateTo(AppPage.CONFIG, null) },
-                        onOpenImport = { showImportDialog = true },
-                        onStartClick = onRequestVpnStart,
-                        onStopClick = viewModel::stopVpn,
-                        onPingClick = viewModel::runPingCheck,
-                        onClearLogs = viewModel::clearLogs
-                    )
-                    AppPage.CONFIG -> {
-                        val editTarget = editingProfileId?.let { id ->
-                            config.profiles.firstOrNull { it.id == id }
-                        }
-                        if (editTarget != null && !editTarget.isLocked) {
-                            ConfigEditorPage(
-                                profile = editTarget,
-                                isLockedByVpn = isTunnelBusy && config.activeProfile()?.id == editTarget.id,
-                                onUpdateProfile = { transform ->
-                                    viewModel.updateProfile(editTarget.id, transform)
-                                },
-                                onDone = { navigateBack() }
-                            )
-                        } else {
-                            ConfigListPage(
-                                config = config,
-                                isTunnelBusy = isTunnelBusy,
-                                isBatchPinging = isBatchPinging,
-                                pingResults = pingResults,
-                                onSelectProfile = viewModel::selectProfile,
-                                onEditProfile = { id -> navigateTo(AppPage.CONFIG, id) },
-                                onDuplicateProfile = viewModel::duplicateProfile,
-                                onShareLink = { profile ->
-                                    LinkExporter.exportShareLink(profile)
-                                        .onSuccess { shareLinkText = it }
-                                        .onFailure { err ->
-                                            Toast.makeText(context, err.message ?: "Gagal ekspor link", Toast.LENGTH_SHORT).show()
-                                        }
-                                },
-                                onExportVxt = { profile -> exportVxtProfile = profile },
-                                onDeleteProfile = { id ->
-                                    navStack.removeAll { it.editingProfileId == id }
-                                    viewModel.deleteProfile(id)
-                                },
-                                onBatchPing = viewModel::runBatchPingCheck,
-                                onCreateClick = { showCreateTypeDialog = true },
-                                onOpenImport = { showImportDialog = true }
-                            )
-                        }
-                    }
-                    AppPage.TOOLS -> ToolsPage(
-                        socksPort = config.socksPort,
-                        isVpnConnected = runtime.status == ConnectionStatus.CONNECTED
-                    )
-                    AppPage.APPS -> {
-                        LaunchedEffect(Unit) { viewModel.ensureAppsLoaded() }
-                        SplitTunnelPage(
+                    if (editTarget != null && !editTarget.isLocked) {
+                        ConfigEditorPage(
+                            profile = editTarget,
+                            isLockedByVpn = isTunnelBusy && config.activeProfile()?.id == editTarget.id,
+                            dnsScanState = dnsScanState,
+                            onScanDns = viewModel::scanSlowDns,
+                            onUpdateProfile = { transform ->
+                                viewModel.updateProfile(editTarget.id, transform)
+                            },
+                            onDone = { navigateBack() }
+                        )
+                    } else {
+                        ConfigListPage(
                             config = config,
-                            apps = apps,
-                            isVpnConnected = runtime.status == ConnectionStatus.CONNECTED,
-                            onSplitModeChange = viewModel::setSplitMode,
-                            onTogglePackage = viewModel::toggleSplitPackage,
-                            onReconnectVpn = viewModel::reconnectVpn
+                            isTunnelBusy = isTunnelBusy,
+                            isBatchPinging = isBatchPinging,
+                            pingResults = pingResults,
+                            onSelectProfile = viewModel::selectProfile,
+                            onEditProfile = { id -> navigateSubPage(AppPage.CONFIG, id) },
+                            onDuplicateProfile = viewModel::duplicateProfile,
+                            onShareLink = { profile ->
+                                LinkExporter.exportShareLink(profile)
+                                    .onSuccess { shareLinkText = it }
+                                    .onFailure { err ->
+                                        Toast.makeText(context, err.message ?: "Gagal ekspor link", Toast.LENGTH_SHORT).show()
+                                    }
+                            },
+                            onExportVxt = { profile -> exportVxtProfile = profile },
+                            onDeleteProfile = { id ->
+                                navStack.removeAll { it.editingProfileId == id }
+                                viewModel.deleteProfile(id)
+                            },
+                            onBatchPing = viewModel::runBatchPingCheck,
+                            onCreateClick = { showCreateTypeDialog = true },
+                            onOpenImport = { showImportDialog = true }
                         )
                     }
-                    AppPage.SETTINGS -> SettingsPage(
-                        config = config,
-                        onUpdateConfig = viewModel::updateConfig
-                    )
                 }
 
-                AnimatedVisibility(
-                    visible = showConnectedBanner,
-                    enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-                    exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                AppPage.TOOLS -> ToolsPage(
+                    socksPort = config.socksPort,
+                    isVpnConnected = runtime.status == ConnectionStatus.CONNECTED
+                )
+
+                AppPage.SETTINGS -> SettingsPage(
+                    config = config,
+                    onOpenAppsFilter = { navigateSubPage(AppPage.APPS) },
+                    onUpdateConfig = viewModel::updateConfig
+                )
+
+                AppPage.APPS -> {
+                    LaunchedEffect(Unit) { viewModel.ensureAppsLoaded() }
+                    SplitTunnelPage(
+                        config = config,
+                        apps = apps,
+                        isVpnConnected = runtime.status == ConnectionStatus.CONNECTED,
+                        onSplitModeChange = viewModel::setSplitMode,
+                        onTogglePackage = viewModel::toggleSplitPackage,
+                        onReconnectVpn = viewModel::reconnectVpn
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = showConnectedBanner,
+                enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+            ) {
+                Surface(
+                    onClick = { showConnectedBanner = false },
+                    shape = RoundedCornerShape(8.dp),
+                    color = StatusConnectedBgDark,
+                    border = BorderStroke(1.dp, StatusConnectedFgDark),
+                    shadowElevation = 6.dp
                 ) {
-                    Surface(
-                        onClick = { showConnectedBanner = false },
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFF0D9488),
-                        border = BorderStroke(1.dp, Color(0xFF2DD4BF)),
-                        shadowElevation = 6.dp
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.CheckCircle,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                "VexoTun Tersambung",
-                                color = Color.White,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 14.sp
-                            )
-                        }
+                        Icon(
+                            Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = StatusConnectedFgDark,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            "Tunnel Tersambung",
+                            color = StatusConnectedFgDark,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
                     }
                 }
             }

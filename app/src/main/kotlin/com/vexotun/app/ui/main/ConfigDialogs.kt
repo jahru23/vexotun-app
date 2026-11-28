@@ -1,182 +1,75 @@
 package com.vexotun.app.ui.main
 
-import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.net.Uri
 import android.os.Build
 import android.os.Environment
-import android.os.PowerManager
 import android.provider.MediaStore
-import android.provider.Settings
 import android.widget.Toast
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.BugReport
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FileOpen
-import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.NetworkPing
-import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.Public
-import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationDrawerItem
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.vexotun.app.model.CoreSshPayload
-import com.vexotun.app.model.LinkExporter
-import com.vexotun.app.model.SlowDnsRecordType
-import com.vexotun.app.model.SplitTunnelMode
-import com.vexotun.app.model.SshProfile
-import com.vexotun.app.model.SshTransport
-import com.vexotun.app.model.TunnelMode
-import com.vexotun.app.model.TunnelProfile
-import com.vexotun.app.model.VexotunConfig
-import com.vexotun.app.model.VxtLockInfo
-import com.vexotun.app.model.XrayProtocol
-import com.vexotun.app.model.XrayTransport
-import com.vexotun.app.vpn.ConnectionStatus
-import com.vexotun.app.vpn.TrafficStatsState
-import com.vexotun.app.vpn.TunnelState
-import com.vexotun.app.vpn.VexotunVpnService
-import com.vexotun.app.vpn.VpnRuntimeState
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import java.net.Inet4Address
-import java.net.NetworkInterface
-import java.text.SimpleDateFormat
-import java.util.Date
+import com.vexotun.app.model.SshTransport
+import com.vexotun.app.model.TunnelMode
+import com.vexotun.app.model.TunnelProfile
+import com.vexotun.app.model.VxtLockInfo
 import java.util.Locale
-
 
 @Composable
 internal fun CreateConfigTypeDialog(
@@ -185,18 +78,19 @@ internal fun CreateConfigTypeDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Pilih Tipe Config") },
+        title = { Text("Buat Profil Baru") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    "Pilih jenis engine yang ingin dibuat. Halaman Tunnel akan mendeteksi tipe config secara otomatis.",
+                    "Pilih jenis engine yang ingin dikonfigurasi.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Card(
+                Surface(
                     onClick = { onSelectMode(TunnelMode.XRAY) },
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
                     Column(
                         modifier = Modifier
@@ -208,18 +102,19 @@ internal fun CreateConfigTypeDialog(
                             Spacer(Modifier.width(8.dp))
                             ModeBadge(TunnelMode.XRAY)
                         }
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.heightSpacer4())
                         Text(
-                            "VMess, VLESS, Trojan, Shadowsocks",
+                            "VMess, VLESS (TLS/Reality), Trojan, Shadowsocks",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
-                Card(
+                Surface(
                     onClick = { onSelectMode(TunnelMode.SSH) },
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
                     Column(
                         modifier = Modifier
@@ -231,9 +126,9 @@ internal fun CreateConfigTypeDialog(
                             Spacer(Modifier.width(8.dp))
                             ModeBadge(TunnelMode.SSH)
                         }
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.heightSpacer4())
                         Text(
-                            "Direct, HTTP Proxy, SSL/TLS, WebSocket",
+                            "Direct, HTTP Proxy, SSL/TLS, WS/WSS, SlowDNS",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -249,6 +144,9 @@ internal fun CreateConfigTypeDialog(
         }
     )
 }
+
+@Composable
+private fun Modifier.heightSpacer4() = this.padding(top = 4.dp)
 
 @Composable
 internal fun ImportLinkDialog(
@@ -284,7 +182,7 @@ internal fun ImportLinkDialog(
                         input = it
                         errorMsg = null
                     },
-                    placeholder = { Text("vmess://...\nvless://...") },
+                    placeholder = { Text("vmess://...\nvless://...\ntrojan://...") },
                     minLines = 3,
                     maxLines = 6,
                     isError = errorMsg != null,
@@ -346,10 +244,13 @@ internal fun ImportLinkDialog(
             }
         },
         confirmButton = {
-            Button(onClick = {
-                val res = onImport(input)
-                res.onFailure { errorMsg = it.message ?: "Link tidak valid" }
-            }) {
+            Button(
+                onClick = {
+                    val res = onImport(input)
+                    res.onFailure { errorMsg = it.message ?: "Link tidak valid" }
+                },
+                shape = RoundedCornerShape(8.dp)
+            ) {
                 Text("Import")
             }
         },
@@ -372,30 +273,32 @@ internal fun ShareLinkDialog(
         onDismissRequest = onDismiss,
         title = { Text("Bagikan Link Config") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    Text(
-                        text = link,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.padding(12.dp),
-                        maxLines = 6,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.background,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Text(
+                    text = link,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(12.dp),
+                    maxLines = 6,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         },
         confirmButton = {
-            Button(onClick = {
-                val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, link)
-                }
-                context.startActivity(Intent.createChooser(sendIntent, "Bagikan Config"))
-            }) {
+            Button(
+                onClick = {
+                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, link)
+                    }
+                    context.startActivity(Intent.createChooser(sendIntent, "Bagikan Config"))
+                },
+                shape = RoundedCornerShape(8.dp)
+            ) {
                 Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Bagikan")
@@ -429,16 +332,17 @@ internal fun ExportVxtDialog(
     onExportFile: (VxtLockInfo, String) -> Unit,
     onExportQr: (VxtLockInfo, String) -> Unit
 ) {
+    val hasPayloadOption = profile.mode == TunnelMode.SSH || profile.xray.useCustomPayload
     var lockConfig by remember { mutableStateOf(true) }
     var hideHost by remember { mutableStateOf(true) }
     var hideSni by remember { mutableStateOf(true) }
     var hideAuth by remember { mutableStateOf(true) }
-    var hidePayload by remember { mutableStateOf(profile.mode == TunnelMode.SSH) }
+    var hidePayload by remember { mutableStateOf(hasPayloadOption) }
     var hideDns by remember { mutableStateOf(profile.mode == TunnelMode.SSH && profile.ssh.transport == SshTransport.SLOWDNS) }
     var pin by remember { mutableStateOf("") }
     var author by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
-    var expiryDays by remember { mutableStateOf(0) } // 0 = unlimited
+    var expiryDays by remember { mutableStateOf(0) }
 
     fun buildLockInfo(): VxtLockInfo {
         val expiresAt = if (expiryDays > 0) {
@@ -466,7 +370,7 @@ internal fun ExportVxtDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    "Config: ${profile.name}",
+                    "Profil: ${profile.name}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -494,13 +398,14 @@ internal fun ExportVxtDialog(
                     VxtCheckRow("Sembunyikan Host / IP", hideHost) { hideHost = it }
                     VxtCheckRow("Sembunyikan Bug / SNI", hideSni) { hideSni = it }
                     VxtCheckRow("Sembunyikan Akun (UUID/Pass)", hideAuth) { hideAuth = it }
-                    if (profile.mode == TunnelMode.SSH) {
-                        VxtCheckRow("Sembunyikan Payload SSH", hidePayload) { hidePayload = it }
-                        if (profile.ssh.transport == SshTransport.SLOWDNS) {
-                            VxtCheckRow("Sembunyikan DNS / NS / PubKey", hideDns) { hideDns = it }
-                        }
+                    if (hasPayloadOption) {
+                        VxtCheckRow("Sembunyikan Payload / Proxy", hidePayload) { hidePayload = it }
+                    }
+                    if (profile.mode == TunnelMode.SSH && profile.ssh.transport == SshTransport.SLOWDNS) {
+                        VxtCheckRow("Sembunyikan DNS / NS / PubKey", hideDns) { hideDns = it }
                     }
                 }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 OutlinedTextField(
                     value = pin,
                     onValueChange = { pin = it.replace("\n", "") },
@@ -539,7 +444,10 @@ internal fun ExportVxtDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { onExportFile(buildLockInfo(), pin.trim()) }) {
+            Button(
+                onClick = { onExportFile(buildLockInfo(), pin.trim()) },
+                shape = RoundedCornerShape(8.dp)
+            ) {
                 Text("Simpan .vxt")
             }
         },
@@ -585,7 +493,8 @@ internal fun VxtPinPromptDialog(
         confirmButton = {
             Button(
                 onClick = { onConfirm(pin.trim()) },
-                enabled = pin.isNotBlank()
+                enabled = pin.isNotBlank(),
+                shape = RoundedCornerShape(8.dp)
             ) {
                 Text("Buka")
             }
@@ -618,7 +527,7 @@ internal fun QrCodeDialog(
             ) {
                 if (qrBitmap != null) {
                     Surface(
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(10.dp),
                         color = Color.White
                     ) {
                         Image(
@@ -642,14 +551,17 @@ internal fun QrCodeDialog(
         },
         confirmButton = {
             if (qrBitmap != null) {
-                Button(onClick = {
-                    val saved = saveBitmapToGallery(context, qrBitmap, "vexotun_qr_${System.currentTimeMillis()}.png")
-                    Toast.makeText(
-                        context,
-                        if (saved) "QR disimpan ke Galeri (Pictures/Vexotun)" else "Gagal menyimpan QR",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }) {
+                Button(
+                    onClick = {
+                        val saved = saveBitmapToGallery(context, qrBitmap, "vexotun_qr_${System.currentTimeMillis()}.png")
+                        Toast.makeText(
+                            context,
+                            if (saved) "QR disimpan ke Galeri (Pictures/Vexotun)" else "Gagal menyimpan QR",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    shape = RoundedCornerShape(8.dp)
+                ) {
                     Text("Simpan ke Galeri")
                 }
             }
@@ -718,7 +630,6 @@ internal fun VxtCheckRow(label: String, checked: Boolean, onCheckedChange: (Bool
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 internal fun formatBytes(bytes: Long): String {
     if (bytes < 1024) return "$bytes B"
     val kb = bytes / 1024.0
@@ -727,4 +638,9 @@ internal fun formatBytes(bytes: Long): String {
     if (mb < 1024) return String.format(Locale.US, "%.2f MB", mb)
     val gb = mb / 1024.0
     return String.format(Locale.US, "%.2f GB", gb)
+}
+
+internal fun formatSpeed(bps: Long): String {
+    if (bps <= 0L) return "0 B/s"
+    return "${formatBytes(bps)}/s"
 }

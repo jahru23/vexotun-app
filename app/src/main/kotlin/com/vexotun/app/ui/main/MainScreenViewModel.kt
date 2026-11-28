@@ -22,8 +22,12 @@ import java.net.URL
 import java.util.Locale
 import java.util.UUID
 import com.vexotun.app.data.ConfigStore
+import com.vexotun.app.model.CoreSshPayload
 import com.vexotun.app.model.LinkParser
+import com.vexotun.app.model.SlowDnsRecordType
 import com.vexotun.app.model.SplitTunnelMode
+import com.vexotun.app.model.SshProfile
+import com.vexotun.app.model.SshTransport
 import com.vexotun.app.model.TunnelMode
 import com.vexotun.app.model.TunnelProfile
 import com.vexotun.app.model.VexotunConfig
@@ -36,7 +40,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,7 +48,33 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+
+@Serializable
+data class SlowDnsScanCandidateUi(
+    val resolver: String = "",
+    val qtype: String = "",
+    val mode: String = "",
+    val mtu: Int = 0,
+    val payloadBytes: Int = 0,
+    val queryCap: Int = 0,
+    val rttMs: Long = 0
+)
+
+@Serializable
+private data class SlowDnsScanResponseUi(
+    val ok: Boolean = false,
+    val candidates: List<SlowDnsScanCandidateUi> = emptyList(),
+    val error: String = ""
+)
+
+data class SlowDnsScanState(
+    val isScanning: Boolean = false,
+    val candidates: List<SlowDnsScanCandidateUi> = emptyList(),
+    val error: String? = null
+)
 
 data class InstalledApp(
     val packageName: String,
@@ -79,12 +108,64 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     private val _pendingExternalPinUri = MutableStateFlow<Uri?>(null)
     val pendingExternalPinUri: StateFlow<Uri?> = _pendingExternalPinUri.asStateFlow()
 
+    private val _dnsScanState = MutableStateFlow(SlowDnsScanState())
+    val dnsScanState: StateFlow<SlowDnsScanState> = _dnsScanState.asStateFlow()
+
+    private val scanJson = Json { ignoreUnknownKeys = true }
+
     fun requestPinForUri(uri: Uri) {
         _pendingExternalPinUri.value = uri
     }
 
     fun clearPendingExternalPinUri() {
         _pendingExternalPinUri.value = null
+    }
+
+    fun scanSlowDns(ssh: SshProfile) {
+        if (_dnsScanState.value.isScanning) return
+        _dnsScanState.value = SlowDnsScanState(isScanning = true)
+        viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            val underlying = withContext(Dispatchers.IO) {
+                VexotunVpnService.detectUnderlyingDnsServers(ctx)
+            }
+            val payload = CoreSshPayload(
+                host = ssh.host.trim(),
+                port = if (ssh.port > 0) ssh.port else 443,
+                username = ssh.username,
+                password = ssh.password,
+                privateKey = ssh.privateKey,
+                transport = ssh.transport.wireValue,
+                proxyHost = "",
+                proxyPort = 8080,
+                sni = "",
+                payload = "",
+                wsPath = "",
+                wsHost = "",
+                dnsServer = ssh.dnsServer.trim().ifBlank { "Auto" },
+                fallbackDns = underlying,
+                dnsType = ssh.dnsType.wireValue,
+                nameserver = ssh.nameserver.trim(),
+                publicKey = ssh.publicKey.trim(),
+                slowDnsMode = ssh.slowDnsMode
+            )
+            val rawJson = withContext(Dispatchers.IO) {
+                TunnelState.scanSlowDns(scanJson.encodeToString(payload))
+            }
+            val resp = runCatching { scanJson.decodeFromString<SlowDnsScanResponseUi>(rawJson) }
+                .getOrElse { SlowDnsScanResponseUi(ok = false, error = it.message ?: "Parse gagal") }
+            _dnsScanState.value = if (resp.ok) {
+                SlowDnsScanState(
+                    isScanning = false,
+                    candidates = resp.candidates.take(8)
+                )
+            } else {
+                SlowDnsScanState(
+                    isScanning = false,
+                    error = resp.error.ifBlank { "Tidak ada jalur DNS yang merespons" }
+                )
+            }
+        }
     }
 
     init {
